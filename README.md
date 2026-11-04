@@ -106,6 +106,7 @@
 | `android/build_apk.sh` | сборка APK без Gradle |
 | `tests/` | генераторы тестовых DLL (потоки, исключения), нативные тесты |
 | `docs/GUIDE.md` | справочник пользователя |
+| `docs/ARCHITECTURE.md`, `docs/ARCHITECTURE.pdf` | как устроен исходный код: кратко и подробно |
 | `PERF.md` | аудит производительности и загрузки |
 | `CHANGES_v*.md` | изменения по версиям |
 
@@ -204,6 +205,7 @@ make build/test_d3d9 build/test_fs build/test_mod build/test_al   # HLE D3D9, ф
 
 ## Документация
 
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): как всё работает под капотом, кратко. Подробная версия: [docs/ARCHITECTURE.pdf](docs/ARCHITECTURE.pdf) (исходник `docs/ARCHITECTURE_full.md`).
 - [docs/GUIDE.md](docs/GUIDE.md): справочник (моды, драйверы GPU, PhoneModify, настройки, переменные `ME1_*`, рецепты, лог, FAQ).
 - [PERF.md](PERF.md): аудит производительности и загрузки с замерами.
 - [CHANGES_v1.0.md](CHANGES_v1.0.md), [CHANGES_v0.10.13.md](CHANGES_v0.10.13.md): изменения.
