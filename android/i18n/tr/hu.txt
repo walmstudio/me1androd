@@ -1,0 +1,367 @@
+J0|Bal klikk
+J1|Jobb klikk
+J2|Szóköz
+J3|Elrendezés mentve
+J4|Húzd a gombokat és a kart. Koppints a ✓-ra, ha kész
+J5|Gombok átlátszósága
+J6|Gombok mérete
+J7|Kar mérete
+J8|Kamera érzékenysége
+J9|Kamera függőleges invertálása
+J10|Rövid koppintás üres helyre = kattintás
+J11|Rezgés gombnyomáskor
+J12|Kar jobbra, gombok balra (tükrözve)
+J13|„Árnyalók fordítása” jelző a játékban
+J14|XInput kontroller (Xbox): a képernyős és a fizikai kontroller a játék kontrollereként működik (az ME1Controller mod kell hozzá)
+J15|Kontroller rezgése (visszajelzés, XInput)
+J16|…a telefonon, ha a kontrollerben nincs rezgőmotor
+J17|Mely gombok látszódjanak…
+J18|Gombok áthelyezése (húzással)
+J19|Elrendezés visszaállítása
+J20|A gombok az alapértelmezett helyükön vannak
+J21|Minden alapértelmezett
+J22|Irányítási beállítások visszaállítva
+J23|A változások azonnal érvényesek.
+J24|Játék közben: a ⊕ hosszú megnyomása megnyitja ugyanezeket a beállításokat és a
+J25|gombáthelyezési módot (húzás ujjal).
+J26|Képernyős irányítás
+J27|Kész
+J28|Gombok a képernyőn
+J29|Mind
+J30|Mégse
+J31|nincs kimenet
+J32|A Mass Effect indul…
+J33|%.1f FPS · %.1f ms · %s
+J34|· korlát
+J35|A Mass Effect indul…
+J36|Létrehozott D3D árnyalók:
+J37|HLSL fordítás:
+J38|, gyorsítótárból:
+J39|\nárnyaló fordítása folyamatban (%.1f mp)
+J40|\nGPU programok:
+J41|(gyorsítótárból
+J42|Árnyalók fordítása folyik. Az első indítás\npár percig is tarthat; az eredmény a gyorsítótárba kerül.
+J43|Játékadatok betöltése…
+J44|⚙ árnyaló fordítása… %.1f mp
+J45|⚙ árnyalók összeállítása (GL:
+J46|A videómeghajtó sorozatosan összeomlik — a játék újraindul (az árnyaló-gyorsítótár kész)
+J47|Beállítások áthelyezve (
+J48|fájl) innen:
+J49|Nem sikerült áthelyezni a beállításokat innen:
+J50|Nem sikerült létrehozni:
+J51|Nincs hozzáférés:
+J52|(már létezik)
+J53|Nincs áthelyezve:
+J54|. Helyezd át kézzel fájlkezelővel innen:\n
+J55|\nide:\n
+J56|Fájl:
+J57|· könyvtár
+J58|· csomagverzió
+J59|· szerző:
+J60|nem olvasható:
+J61|a csomagban nincs Vulkan könyvtár (.so)
+J62|hiányzó fájl:
+J63|az archívumban
+J64|Android API szükséges:
+J65|), neked
+J66|) — a meghajtó valószínűleg nem fog betöltődni.
+J67|Meghajtó ehhez:
+J68|, neked viszont
+J69|van — ezzel a GPU-val nem fog működni.
+J70|nem hozható létre:
+J71|kicsomagolás után hiányzik:
+J72|nem írható:
+J73|Beállítások automatikusan kiválasztva
+J74|\n\nLent módosíthatod őket (előbeállítások és egyes beállítások).
+J75|Nincs csatlakoztatott kontroller (az USB/Bluetooth kontrollereket automatikusan felismeri).
+J76|Kontroller:
+J77|Billentyűzet és egér (eredeti játék)
+J78|Xbox / XInput kontroller (ME1Controller mod)
+J79|A fizikai és a képernyős kontroller (⊕ a játékban) Xbox 360 kontrollerként működik. Az eredeti játékban nincs
+J80|kontroller-kiosztás — az ME1Controller mod kell hozzá (lent kapcsold be). A mod 16:9-re és angol súgószövegre készült.
+J81|A kontroller billentyűzetet és egeret emulál: bal kar — WASD, jobb — kamera, RT — tűz, LT — célzás, A — E, B — Q,
+J82|X — Szóköz, Y — F, LB — R, RB — Shift, L3 — Ctrl, R3 — J, Start — Esc, Back — M, iránykereszt — nyilak.
+J83|Menük — érintéssel.
+J84|⚠ Nincs bekapcsolva kontroller-kiosztást tartalmazó mod (Config/BIOInput.ini XboxTypeS_… sorokkal) — a játékban a kontroller nem fog működni.
+J85|Modok:
+J86|/<mod neve>/ (benne — Config és „Mass Effect”; a fájlok indításkor cserélődnek,
+J87|az eredeti nem változik)
+J88|— nincsenek modok
+J89|(kontroller)
+J90|Irányítási profil: XInput kontroller
+J91|Irányítási profil: billentyűzet és egér
+J92|DLC a játék mappájában:
+J93|— nincs
+J94|fájlok ehhez:
+J95|automatikusan bekapcsolódnak, amikor a DLC megjelenik a játék mappájában (
+J96|Rendszer OpenGL ES (alapértelmezett)
+J97|Rendszer Vulkan — saját D3D9→Vulkan megjelenítő (új)
+J98|Rendszer Vulkan + Mesa Zink (kísérleti)
+J99|— nincs a mappában (a rendszeré lesz használva)
+J100|Mesa Zinken át (OpenGL ES → Vulkan) a saját megjelenítő helyett
+J101|Az eszköz meghajtója — a leggyorsabb és legjobban kipróbált lehetőség.
+J102|Saját megjelenítő: a játék Direct3D 9 parancsai közvetlenül az eszköz Vulkan meghajtójához jutnak, OpenGL ES és Zink nélkül.
+J103|Csak Vulkan 1.0 kell (Mali-G52 és Adreno 6xx megfelel); az árnyalók SPIR-V-re fordulnak és gyorsítótárba kerülnek. A képkockák
+J104|a swapchainen át jelennek meg, ha nincs — a CPU-n át. Ha a Vulkan nem indul — rendszer OpenGL ES („[vk]” sorok a naplóban).
+J105|A Mesa Zink 26.2.6 a játék OpenGL ES-ét a rendszer Vulkan meghajtójára fordítja. A képkockák a CPU-n át jutnak a képernyőre —
+J106|lassabb a rendszer változatnál; teszteléshez, ha azzal hibás a kép. Ha a Vulkan nem indul — rendszer OpenGL ES.
+J107|Nincs csomag itt:
+J108|— a játék rendszer OpenGL ES-sel indul.
+J109|✗ A csomag nem megfelelő:
+J110|\nAlapértelmezés — saját D3D9→Vulkan megjelenítő (csak Vulkan 1.0 kell, képkockák swapchainen vagy CPU-n át).
+J111|A fenti kapcsolóval — Mesa Zink 26.2.6 (Vulkan 1.1, VK_KHR_maintenance1 és VK_EXT_robustness2 kell, képkockák CPU-n át).
+J112|Ha a meghajtó nem töltődik be, a játék magától rendszer OpenGL ES-re vált; az ok a naplóban: „[vk]”, „[gl] … zink check” és „ZINK” sorok.
+J113|Saját meghajtók: tegyél egy AdrenoTools formátumú .zip-et (meta.json + .so: Turnip, Qualcomm buildek, Mali) vagy
+J114|mappát/.so-t ide:
+J115|/ — a lista frissül, amikor visszatérsz az indítóba. A Turnip és a
+J116|Qualcomm meghajtók csak Adrenón működnek, a Mali meghajtók — csak Malin.
+J117|Meghajtólista frissítése
+J118|Meghajtók a mappában:
+J119|Meghajtó:
+J120|nem található
+J121|A meghajtó nem megfelelő:
+J122|— indítás rendszer OpenGL ES-sel
+J123|Meghajtó
+J124|Előkészítés:
+J125|A meghajtó nincs kicsomagolva
+J126|\n\nIndítás rendszer OpenGL ES-sel?
+J127|Indítás
+J128|\n\nHa a meghajtó nem töltődik be, a játék magától rendszer OpenGL ES-sel indul.
+J129|Mégis megpróbálom
+J130|Rendszer OpenGL ES
+J131|Mass Effect — Android port
+J132|\nAutomatikus előbeállítás:
+J133|A játék fájljai
+J134|A játék mappája
+J135|(kézzel választva)
+J136|Nincs tárhely-engedély — nélküle a /sdcard/MassEffect mappa nem látható.
+J137|Fájlhozzáférés engedélyezése
+J138|Az Android 11+ nem engedi olvasni a /sdcard-ot — kapcsold be az „Összes fájl kezelése” engedélyt.
+J139|Hozzáférési beállítások megnyitása
+J140|Másold a játék mappáját (Binaries, BioGame, …) a /sdcard/MassEffect mappába — automatikusan megtalálja.
+J141|A „Mass Effect” és hasonló nevű mappákat is keresi a belső tárhely és az SD-kártya gyökerében (és egy szinttel lejjebb).
+J142|A játék az alkalmazás mappájában van — az alkalmazással együtt törlődik. Jobb áthelyezni a /sdcard/MassEffect mappába.
+J143|Áthelyezés ide: /sdcard/MassEffect
+J144|Áthelyezés
+J145|A játék áthelyezve ide: /sdcard/MassEffect
+J146|Mentések és beállítások:
+J147|Ellenőrzés
+J148|Frissítés
+J149|Játék:
+J150|A játék nem található
+J151|Mappa módosítása
+J152|PhoneModify generátor — terhelés csökkentése (képkocka-korlátok, effektek)
+J153|Irányítás és modok
+J154|Grafikus meghajtó
+J155|Előbeállítások
+J156|Auto (ajánlott)
+J157|Automatikus előbeállítás:
+J158|— koppints a „Mentés” gombra
+J159|Előbeállítás alkalmazva — koppints a „Mentés” gombra
+J160|Mentés
+J161|Mentve
+J162|Hiba
+J163|Alapértelmezett
+J164|Értékek a Default*.ini-ből — koppints a „Mentés” gombra
+J165|Játék indítása
+J166|A játék teljes képernyőn nyílik meg (külön folyamat). Megjelenítés: Direct3D 9 → OpenGL ES 3.
+J167|Irányítás: érintés = egér (egy ujj — bal gomb, második ujj — jobb), „Vissza” = Esc,
+J168|az USB/Bluetooth billentyűzet úgy működik, mint PC-n, kontroller — lásd „Irányítás és modok”. A bal felső sarokban lévő ⊕ gomb megjeleníti a képernyős
+J169|irányítást: kar (WASD), bal/jobb klikk, E, Szóköz, Shift, 1–4 stb.; húzás üres helyen — kamera,
+J170|a ⊕ hosszú megnyomása — beállítások (átlátszóság, méret, érzékenység, gombok áthelyezése),
+J171|rövid koppintás — kattintás. A videók (Bink) hanggal játszódnak le, átugrás — „Vissza” (Esc) vagy koppintás
+J172|(ha a videók zavarnak — ME1_BINK=0 a „További változók” között). Az első indítás lefordítja az árnyalókat
+J173|(pár perc; a haladás az indítóképernyőn látszik). Napló — Documents/me1exe_run.log, képkocka-pillanatképek —
+J174|Documents/me1_frames (az első és minden 1800. képkocka).
+J175|Az utolsó indítás naplója
+J176|Képernyős irányítás — beállítások
+J177|További változók (kísérletezéshez)
+J178|Ablak nélküli teszt (90 mp, képkockák → Documents/me1_frames)
+J179|Ugyanaz a MassEffect.exe, de külön, ablak nélküli programban: a képkockák a memóriába rajzolódnak, és minden 300.
+J180|PNG-be mentődik; az első képkocka után 90 mp-cel leáll. A kimenet itt jelenik meg.
+J181|(egyéni)
+J182|✓ A játék megvan
+J183|(nincs BioGame\\CookedPC)
+J184|✓ Konfigurációk megvannak, ✗ nincs Binaries\\MassEffect.exe
+J185|✗ A játék nem található — a beállítások mentődnek, és a másolás után érvényesülnek
+J186|Soronként egy NÉV=érték pár (vagy szóközzel elválasztva). Üres mező — minden alapértelmezett.
+J187|Teljes lista leírásokkal — lenti gomb (egy sorra koppintva a mezőbe kerül).
+J188|Változók listája…
+J189|További változók
+J190|Törlés
+J191|Videók és hang
+J202|Grafika
+J227|Gyorsítótárak
+J231|Idő, szálak, bevitel
+J238|Pillanatképek és naplók
+J259|Az indító állítja be (felülírható)
+J264|Változók (koppintás — hozzáadás)
+J265|— szükség esetén javítsd az értéket
+J266|Bezárás
+J267|Auto — az eszköz alapján (SoC:
+J268|)  [ajánlott]
+J269|light — csak árnyékok (szinte veszteség nélkül)
+J270|balanced — részecskék/árnyékok/matricák/LOD, 6000 rajzolási hívás és 3 millió primitív korlát
+J271|aggressive — + MotionBlur/DoF/bloom ki, jelenet 70%, korlát 3500 és 1,8 millió
+J272|extreme — minden minimumon, jelenet 60%, korlát 2500 és 1,2 millió
+J273|cpu — erős GPU-hoz lassú CPU-val: felbontáscsökkentés nélkül, korlát 1200 és 300 ezer
+J274|off — a módosító eltávolítása és a mód kikapcsolása
+J275|PhoneModify generátor
+J288|phone_tune.txt törölve, módosítók kikapcsolva
+J289|PhoneModify/phone_tune.txt létrehozva (
+J290|), módosítók bekapcsolva
+J291|A Binaries és BioGame mappát tartalmazó mappa útvonala. „Auto” — a /sdcard/MassEffect és hasonlók keresése.\nEllenőrizve:
+J292|Kiválasztás
+J293|Ebben a mappában nincs játék — az útvonal ennek ellenére mentve
+J294|Auto
+J295|Mit lát a játék
+J296|Ebben az APK-ban nincs libme1run.so
+J297|Indítás:
+J298|Ablak nélküli teszt: MassEffect.exe
+J299|(a napló nincs írva:
+J300|\nKilépési kód:
+J301|mp
+J302|\nIndítási hiba:
+J303|Nincs napló:
+J304|A motor naplója nem található itt:
+J305|A motor naplója (
+S0|100% (méretezés nélkül)
+S1|30 képkocka/mp
+S2|45 képkocka/mp
+S3|60 képkocka/mp
+S4|Bloom, mélységélesség stb.
+S5|Language az [Engine.Engine]-ben; a megfelelő honosítási fájlok kellenek
+S6|A megjelenítő MaxTextureSize értéke
+S7|MouseSensitivity (érintéses körülnézés és egér)
+S8|ScreenPercentage: a 3D jelenet kisebb felbontásban rajzolódik és felnagyítódik, a felület és a szöveg éles marad. 75% 1280×720-nál — 960×540-es jelenet: érezhetően kisebb GPU-terhelés. Kísérleti: ha a kép nem tölti ki a képernyőt, állítsd vissza 100%-ra
+S9|Snapdragon 7xx / Dimensity 900 és jobb
+S10|Snapdragon 8 Gen 2/3/Elite, Dimensity 9200+: 1080p, árnyékok, 60 FPS
+S11|TextureLODLevel: a világ és a szereplők textúráinak maximális mérete
+S12|Automatikus mentés
+S13|Angol
+S14|Hardveres
+S15|Korlátlan
+S16|Őrület
+S17|Magyar
+S18|Függőleges szinkronizálás
+S19|Veterán
+S20|Belső megjelenítési felbontás; a kép a teljes képernyőre skálázódik
+S21|Magas
+S22|Magas (2048-ig)
+S23|Magas
+S24|Magas
+S25|Gamma
+S26|Grafika
+S27|Textúrarészletesség
+S28|Részecskék részletessége
+S29|Dinamikus árnyékok
+S30|Hang
+S31|Hangeszköz
+S32|Filmszemcse
+S33|Alapértelmezett érték új profilhoz
+S34|Játék
+S35|Spanyol
+S36|Olasz
+S37|Hangcsatornák
+S38|Könnyű
+S39|Max. textúraméret
+S40|Maximális (4096-ig)
+S41|Maximális
+S42|3D jelenet méretaránya
+S43|Kevesebb melegedés és akkumulátorhasználat
+S44|Minimális
+S45|PhoneModify módosítók
+S46|Androidon mindig teljes képernyő; a setres parancsra hat
+S47|Német
+S48|Alacsony
+S49|Alacsony (512-ig)
+S50|Alacsony
+S51|Alacsony
+S52|Normál
+S53|Könnyített mód gyenge eszközökhöz. A motor fényei és effektjei: nincsenek dinamikus és szereplőárnyékok, egyszerű fénytérképek, nincs mozgási elmosódás, mélységélesség, lencsecsillanás és dinamikus matricák, egyszerűsített bloom, bilineáris szűrés, a szereplők egy LOD-szinttel lejjebb, nincsenek apró környezeti részletek. Árnyalók fél pontossággal (FP16), ahol a játék megengedi a half típust, olcsó sRGB; 5 ms-os hangidőzítő és 32 kHz-es hang. A BIOEngine.ini beállításaid nem változnak — a mód a memóriában érvényesül, és nyomtalanul kikapcsolható. Gyorsabb, a kép érezhetően egyszerűbb
+S54|FPS-korlát
+S55|Egyszerre szóló hangforrások (kevesebb — gyorsabb)
+S56|Nagyon gyenge GPU-k (PowerVR GE8xxx, Adreno 50x, Mali-G31/G51): 640×360, egyszerűsített számítás
+S57|FPS kijelzése
+S58|Teljes képernyős mód
+S59|Lengyel
+S60|Utófeldolgozás
+S61|A játék mappájában lévő PhoneModify mappa módosítóinak alkalmazása (.txt fájlok): képkockánkénti rajzolási hívás- és primitívkorlátok (maxdraws/maxprims), motorkulcsok cseréje (ini <szakasz> <kulcs> <érték>), bájtok írása a játék memóriájába (patch <cím> <bájtok>). Sablont a generátor készít: me1cfg --game ... modgen balanced|aggressive|off. Óvatosan: a korlátok és foltok megváltoztatják a képet
+S62|Szoftveres (ajánlott)
+S63|Gombok átlátszósága, %
+S64|Mozgási elmosódás
+S65|Felbontás
+S66|Orosz
+S67|A legnehezebb beállítás gyenge GPU-khoz
+S68|Érintéses irányítás
+S69|Gyenge GPU-k (Mali-G52/G57, Adreno 610–619): 960×540, árnyékok és utófeldolgozás nélkül, 30 FPS
+S70|Nehézség
+S71|Közepes
+S72|Közepes
+S73|Közepes
+S74|Közepes (1024-ig)
+S75|Feliratok
+S76|Megszünteti a képszakadást
+S77|Irányítás
+S78|Egyszerűsített számítás
+S79|ISACT eszköz; a portban a hang OpenAL Softon keresztül megy
+S80|Textúraszűrés
+S81|Csúcskategória
+S82|Francia
+S83|Hardcore
+S84|Cseh
+S85|Körülnézés érzékenysége
+S86|Képernyő
+S87|Képernyős gombok és karok
+S88|Szöveg nyelve
+S89|Képfényerő (alapértelmezett 1.6)
+F0|Ismeretlen GPU (
+F1|→ osztály «
+F2|; kevés RAM → «
+F3|; CPU legfeljebb
+F4|GHz → «
+F5|RAM
+F6|GB,
+F7|mag
+F8|legfeljebb
+F9|GHz,
+F10|képernyő
+F11|render
+F12|minimális
+F13|alacsony
+F14|közepes
+F15|magas
+F16|maximális
+F17|hiba:
+F18|nem sikerült mappát létrehozni ehhez:
+F19|írási hiba:
+F20|felülírások:
+F21|.ini-t a játék még nem hozta létre — az értékek az első indításkor kerülnek bele
+F22|frissítve:
+F23|a beállítások nincsenek betöltve
+F24|A játék mappája:
+F25|Dokumentumok (a játéknak):
+F26|(hiba)
+F27|BIOEngine.ini (a játék hozta létre)
+F28|DefaultEngine.ini + port beállítások
+F29|A játék konfigurációja nem található — másold a játékot a fenti mappába.
+F30|A játék ezt olvassa (
+F31|Felbontás X
+F32|Felbontás Y
+F34|Szűrés
+F38|Gamma
+F39|Nyelv
+F40|: 0/1 várható
+F41|: egész szám várható
+F42|: megengedett
+F43|: szám várható
+F44|: formátum SZÉLESSÉGxMAGASSÁG, 320x200-tól
+F45|: érvénytelen érték '
+F46|ismeretlen beállítás '
+F47|ismeretlen előbeállítás '
+X0|Felület nyelve
+X1|A játék szövegének nyelve
+X2|A játék szövegének nyelvét is átállítod erre:
+X3|? A játék mappájában kellenek ennek a nyelvnek a honosítási fájljai.
+X4|Igen
+X5|Nem

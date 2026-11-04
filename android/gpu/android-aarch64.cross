@@ -1,0 +1,18 @@
+[binaries]
+c = '/data/tools/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang'
+cpp = '/data/tools/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang++'
+ar = '/data/tools/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar'
+strip = '/data/tools/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip'
+pkg-config = '/bin/false'
+
+[built-in options]
+c_args = ['-O2', '-fPIC']
+cpp_args = ['-O2', '-fPIC']
+c_link_args = ['-Wl,-z,max-page-size=16384', '-llog', '-lsync']
+cpp_link_args = ['-static-libstdc++', '-Wl,-z,max-page-size=16384', '-llog', '-lsync']
+
+[host_machine]
+system = 'android'
+cpu_family = 'aarch64'
+cpu = 'armv8'
+endian = 'little'

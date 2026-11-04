@@ -1,0 +1,367 @@
+J0|LTM
+J1|PTM
+J2|Mezerník
+J3|Rozložení uloženo
+J4|Přetáhněte tlačítka a páčku. Klepněte na ✓ — hotovo
+J5|Průhlednost tlačítek
+J6|Velikost tlačítek
+J7|Velikost páčky
+J8|Citlivost kamery
+J9|Obrátit kameru svisle
+J10|Krátké klepnutí na volné místo = kliknutí
+J11|Vibrace při stisku
+J12|Páčka vpravo, tlačítka vlevo (zrcadlově)
+J13|Ukazatel „kompilace shaderů“ ve hře
+J14|Gamepad XInput (Xbox): obrazovkový i fyzický gamepad jako ovladač hry (vyžaduje mod ME1Controller)
+J15|Vibrace gamepadu (odezva, XInput)
+J16|…na telefonu, pokud gamepad nemá vibrační motor
+J17|Která tlačítka zobrazit…
+J18|Přeskládat tlačítka (přetažením)
+J19|Obnovit rozložení
+J20|Tlačítka jsou na výchozích místech
+J21|Vše výchozí
+J22|Nastavení ovládání obnoveno
+J23|Změny platí okamžitě.
+J24|Ve hře: dlouhý stisk ⊕ otevře tato nastavení a režim
+J25|přeskládání tlačítek (přetažení prstem).
+J26|Ovládání na obrazovce
+J27|Hotovo
+J28|Tlačítka na obrazovce
+J29|Vše
+J30|Zrušit
+J31|bez výstupu
+J32|Mass Effect se spouští…
+J33|%.1f FPS · %.1f ms · %s
+J34|· limit
+J35|Mass Effect se spouští…
+J36|Vytvořeno shaderů D3D:
+J37|Kompilace HLSL:
+J38|, z mezipaměti:
+J39|\nprávě se kompiluje shader (%.1f s)
+J40|\nProgramy GPU:
+J41|(z mezipaměti
+J42|Probíhá kompilace shaderů. První spuštění může trvat\nněkolik minut; výsledek se uloží do mezipaměti.
+J43|Načítání herních dat…
+J44|⚙ kompilace shaderu… %.1f s
+J45|⚙ sestavování shaderů (GL:
+J46|Grafický ovladač opakovaně padá — hra se restartuje (mezipaměti shaderů jsou připravené)
+J47|Nastavení přenesena (
+J48|souborů) z
+J49|Nepodařilo se přenést nastavení z
+J50|Nepodařilo se vytvořit
+J51|Bez přístupu k
+J52|(již existuje)
+J53|Nepřeneseno:
+J54|. Přesuňte ručně správcem souborů z\n
+J55|\ndo\n
+J56|Soubor:
+J57|· knihovna
+J58|· verze balíčku
+J59|· autor:
+J60|nelze číst:
+J61|v balíčku chybí knihovna Vulkan (.so)
+J62|chybí soubor
+J63|v archivu
+J64|Vyžaduje Android API
+J65|), máte
+J66|) — ovladač se nejspíš nenačte.
+J67|Ovladač pro
+J68|, ale máte
+J69|— s tímto GPU fungovat nebude.
+J70|nelze vytvořit
+J71|po rozbalení chybí
+J72|nelze zapsat
+J73|Nastavení zvolena automaticky
+J74|\n\nZměnit je můžete níže (předvolby a jednotlivá nastavení).
+J75|Gamepad není připojen (gamepady USB/Bluetooth se rozpoznají automaticky).
+J76|Gamepad:
+J77|Klávesnice a myš (původní hra)
+J78|Gamepad Xbox / XInput (mod ME1Controller)
+J79|Fyzický i obrazovkový gamepad (⊕ ve hře) fungují jako ovladač Xbox 360. Původní hra nemá
+J80|přiřazení pro gamepad — je potřeba mod ME1Controller (zapněte jej níže). Mod je určen pro 16:9 a anglické nápovědy.
+J81|Gamepad emuluje klávesnici a myš: levá páčka — WASD, pravá — kamera, RT — střelba, LT — míření, A — E, B — Q,
+J82|X — Mezerník, Y — F, LB — R, RB — Shift, L3 — Ctrl, R3 — J, Start — Esc, Back — M, kříž — šipky.
+J83|Nabídky — dotykem.
+J84|⚠ Není zapnut mod s přiřazením gamepadu (Config/BIOInput.ini s XboxTypeS_…) — ve hře gamepad fungovat nebude.
+J85|Mody:
+J86|/<název modu>/ (uvnitř — Config a „Mass Effect“; soubory se nahrazují při spuštění,
+J87|originál se nemění)
+J88|— žádné mody
+J89|(gamepad)
+J90|Profil ovládání: gamepad XInput
+J91|Profil ovládání: klávesnice a myš
+J92|DLC ve složce hry:
+J93|— žádné
+J94|soubory pro
+J95|se připojí samy, až se DLC objeví ve složce hry (
+J96|Systémový OpenGL ES (výchozí)
+J97|Systémový Vulkan — vlastní renderer D3D9→Vulkan (nové)
+J98|Systémový Vulkan + Mesa Zink (experiment)
+J99|— není ve složce (použije se systémový)
+J100|Přes Mesa Zink (OpenGL ES → Vulkan) místo vlastního rendereru
+J101|Ovladač zařízení — nejrychlejší a nejověřenější varianta.
+J102|Vlastní renderer: příkazy Direct3D 9 ze hry jdou přímo do ovladače Vulkan zařízení, bez OpenGL ES a bez Zink.
+J103|Stačí Vulkan 1.0 (vyhoví Mali-G52 i Adreno 6xx); shadery se sestavují do SPIR-V a ukládají do mezipaměti. Snímky se zobrazují
+J104|přes swapchain, jinak přes CPU. Pokud se Vulkan nespustí — systémový OpenGL ES (řádky „[vk]“ v logu).
+J105|Mesa Zink 26.2.6 převádí OpenGL ES hry na systémový ovladač Vulkan. Snímky jdou na obrazovku přes CPU —
+J106|pomaleji než systémová varianta; pro test, pokud jsou s ní artefakty. Pokud se Vulkan nespustí — systémový OpenGL ES.
+J107|Balíček chybí v
+J108|— hra se spustí se systémovým OpenGL ES.
+J109|✗ Balíček nevyhovuje:
+J110|\nVýchozí — vlastní renderer D3D9→Vulkan (stačí Vulkan 1.0, snímky přes swapchain nebo CPU).
+J111|S přepínačem výše — Mesa Zink 26.2.6 (vyžaduje Vulkan 1.1, VK_KHR_maintenance1 a VK_EXT_robustness2, snímky přes CPU).
+J112|Pokud se ovladač nenačte, hra sama přejde na systémový OpenGL ES; důvod je v logu: řádky „[vk]“, „[gl] … zink check“ a „ZINK“.
+J113|Vlastní ovladače: vložte .zip ve formátu AdrenoTools (meta.json + .so: Turnip, sestavení Qualcomm, Mali) nebo
+J114|složku/.so do
+J115|/ — seznam se obnoví po návratu do spouštěče. Ovladače Turnip a
+J116|Qualcomm fungují jen na Adreno, ovladače Mali — jen na Mali.
+J117|Obnovit seznam ovladačů
+J118|Ovladačů ve složce:
+J119|Ovladač
+J120|nenalezen
+J121|Ovladač nevyhovuje:
+J122|— spuštění se systémovým OpenGL ES
+J123|Ovladač
+J124|Příprava:
+J125|Ovladač není rozbalen
+J126|\n\nSpustit se systémovým OpenGL ES?
+J127|Spustit
+J128|\n\nPokud se ovladač nenačte, hra se sama spustí se systémovým OpenGL ES.
+J129|Přesto zkusit
+J130|Systémový OpenGL ES
+J131|Mass Effect — port pro Android
+J132|\nAutomatická předvolba:
+J133|Soubory hry
+J134|Složka hry
+J135|(zvolena ručně)
+J136|Chybí oprávnění k úložišti — bez něj není složka /sdcard/MassEffect vidět.
+J137|Povolit přístup k souborům
+J138|Android 11+ nedovoluje číst /sdcard — zapněte „Přístup ke všem souborům“.
+J139|Otevřít nastavení přístupu
+J140|Zkopírujte složku hry (Binaries, BioGame, …) do /sdcard/MassEffect — najde se automaticky.
+J141|Hledají se také složky „Mass Effect“ a podobné v kořeni úložiště a SD karty (i o úroveň hlouběji).
+J142|Hra je ve složce aplikace — smaže se spolu s aplikací. Lépe ji přesunout do /sdcard/MassEffect.
+J143|Přesunout do /sdcard/MassEffect
+J144|Přesun
+J145|Hra přesunuta do /sdcard/MassEffect
+J146|Uložené pozice a nastavení:
+J147|Zkontrolovat
+J148|Obnovit
+J149|Hra:
+J150|Hra nenalezena
+J151|Změnit složku
+J152|Generátor PhoneModify — snížit zátěž (limity snímku, efekty)
+J153|Ovládání a mody
+J154|Grafický ovladač
+J155|Předvolby
+J156|Auto (doporučeno)
+J157|Automatická předvolba:
+J158|— klepněte na „Uložit“
+J159|Předvolba použita — klepněte na „Uložit“
+J160|Uložit
+J161|Uloženo
+J162|Chyba
+J163|Výchozí
+J164|Hodnoty z Default*.ini — klepněte na „Uložit“
+J165|Spustit hru
+J166|Hra se otevře na celou obrazovku (samostatný proces). Vykreslování: Direct3D 9 → OpenGL ES 3.
+J167|Ovládání: dotyk = myš (prst — levé tlačítko, druhý prst — pravé), „Zpět“ = Esc,
+J168|klávesnice USB/Bluetooth funguje jako na PC, gamepad — viz „Ovládání a mody“. Tlačítko ⊕ vlevo nahoře zobrazí ovládání
+J169|na obrazovce: páčka (WASD), LTM/PTM, E, Mezerník, Shift, 1–4 aj.; tah po volném místě — kamera,
+J170|dlouhý stisk ⊕ — nastavení (průhlednost, velikost, citlivost, přeskládání tlačítek),
+J171|krátké klepnutí — kliknutí. Videa (Bink) se přehrávají se zvukem, přeskočení — „Zpět“ (Esc) nebo klepnutí
+J172|(pokud videa překážejí — ME1_BINK=0 v „Dalších proměnných“). První spuštění kompiluje shadery
+J173|(několik minut; průběh se ukazuje na úvodní obrazovce). Log — Documents/me1exe_run.log, snímky —
+J174|Documents/me1_frames (první snímek a každý 1800.).
+J175|Log posledního spuštění
+J176|Ovládání na obrazovce — nastavení
+J177|Další proměnné (pro pokusy)
+J178|Test bez okna (90 s, snímky → Documents/me1_frames)
+J179|Tentýž MassEffect.exe, ale v samostatném programu bez okna: snímky se kreslí do paměti a každý 300.
+J180|se ukládá do PNG; skončí 90 s po prvním snímku. Výstup se zobrazí tady.
+J181|(vlastní)
+J182|✓ Hra nalezena
+J183|(chybí BioGame\\CookedPC)
+J184|✓ Konfigurace nalezeny, ✗ chybí Binaries\\MassEffect.exe
+J185|✗ Hra nenalezena — nastavení se uloží a použijí po zkopírování
+J186|Jedna dvojice NÁZEV=hodnota na řádek (nebo oddělené mezerou). Prázdné pole — vše výchozí.
+J187|Úplný seznam s popisy — tlačítko níže (klepnutím na řádek se přidá do pole).
+J188|Seznam proměnných…
+J189|Další proměnné
+J190|Vymazat
+J191|Videa a zvuk
+J202|Grafika
+J227|Mezipaměti
+J231|Čas, vlákna, vstup
+J238|Snímky a logy
+J259|Nastavuje spouštěč (lze přepsat)
+J264|Proměnné (klepnutí — přidat)
+J265|— v případě potřeby upravte hodnotu
+J266|Zavřít
+J267|Auto — podle zařízení (SoC:
+J268|)  [doporučeno]
+J269|light — jen stíny (téměř bez ztrát)
+J270|balanced — částice/stíny/obtisky/LOD, limit 6000 volání kreslení a 3 mil. primitiv
+J271|aggressive — + MotionBlur/DoF/bloom vyp., scéna 70 %, limit 3500 a 1,8 mil.
+J272|extreme — vše na minimum, scéna 60 %, limit 2500 a 1,2 mil.
+J273|cpu — pro výkonné GPU s pomalým CPU: bez snížení rozlišení, limit 1200 a 300 tis.
+J274|off — odstranit modifikátor a vypnout režim
+J275|Generátor PhoneModify
+J288|phone_tune.txt smazán, modifikátory vypnuty
+J289|Vytvořen PhoneModify/phone_tune.txt (
+J290|), modifikátory zapnuty
+J291|Cesta ke složce s Binaries a BioGame. „Auto“ — hledat /sdcard/MassEffect a podobné.\nZkontrolováno:
+J292|Vybrat
+J293|V této složce hra nenalezena — cesta se přesto uloží
+J294|Auto
+J295|Co uvidí hra
+J296|Toto sestavení APK neobsahuje libme1run.so
+J297|Spouštění:
+J298|Test bez okna: MassEffect.exe
+J299|(log nezapsán:
+J300|\nNávratový kód:
+J301|s
+J302|\nChyba spuštění:
+J303|Žádný log:
+J304|Log enginu nenalezen v
+J305|Log enginu (
+S0|100 % (bez škálování)
+S1|30 snímků/s
+S2|45 snímků/s
+S3|60 snímků/s
+S4|Bloom, hloubka ostrosti apod.
+S5|Language v [Engine.Engine]; jsou potřeba odpovídající lokalizační soubory
+S6|MaxTextureSize rendereru
+S7|MouseSensitivity (dotykové rozhlížení a myš)
+S8|ScreenPercentage: 3D scéna se vykresluje v nižším rozlišení a roztahuje, rozhraní a text zůstávají ostré. 75 % při 1280×720 — scéna 960×540: znatelně nižší zátěž GPU. Experimentální: pokud obraz nevyplní obrazovku, vraťte 100 %
+S9|Snapdragon 7xx / Dimensity 900 a vyšší
+S10|Snapdragon 8 Gen 2/3/Elite, Dimensity 9200+: 1080p, stíny, 60 FPS
+S11|TextureLODLevel: maximální velikost textur světa a postav
+S12|Automatické ukládání
+S13|Angličtina
+S14|Hardwarové
+S15|Bez omezení
+S16|Šílenství
+S17|Maďarština
+S18|Vertikální synchronizace
+S19|Veterán
+S20|Vnitřní rozlišení vykreslování; obraz se škáluje na celou obrazovku
+S21|Vysoká
+S22|Vysoká (do 2048)
+S23|Vysoké
+S24|Vysoké
+S25|Gama
+S26|Grafika
+S27|Detail textur
+S28|Detail částic
+S29|Dynamické stíny
+S30|Zvuk
+S31|Zvukové zařízení
+S32|Filmové zrno
+S33|Výchozí hodnota pro nový profil
+S34|Hra
+S35|Španělština
+S36|Italština
+S37|Zvukové kanály
+S38|Lehká
+S39|Max. velikost textury
+S40|Maximální (do 4096)
+S41|Maximální
+S42|Měřítko 3D scény
+S43|Méně zahřívání a spotřeby baterie
+S44|Minimální
+S45|Modifikátory PhoneModify
+S46|Na Androidu vždy celá obrazovka; ovlivňuje příkaz setres
+S47|Němčina
+S48|Nízká
+S49|Nízká (do 512)
+S50|Nízké
+S51|Nízké
+S52|Normální
+S53|Odlehčený režim pro slabá zařízení. Osvětlení a efekty enginu: bez dynamických stínů a stínů postav, jednoduché světelné mapy, bez rozmazání pohybu, hloubky ostrosti, odlesků objektivu a dynamických obtisků, zjednodušený bloom, bilineární filtrování, postavy o stupeň LOD níže, bez drobných detailů okolí. Shadery v poloviční přesnosti (FP16) tam, kde hra dovoluje half, levné sRGB; zvukový časovač 5 ms a zvuk 32 kHz. Vaše nastavení v BIOEngine.ini se nemění — režim se uplatní v paměti a vypne se beze stopy. Rychlejší, obraz je znatelně jednodušší
+S54|Omezení FPS
+S55|Současně znějících zdrojů (méně — rychleji)
+S56|Velmi slabé GPU (PowerVR GE8xxx, Adreno 50x, Mali-G31/G51): 640×360, zjednodušený výpočet
+S57|Zobrazit FPS
+S58|Režim celé obrazovky
+S59|Polština
+S60|Postprocessing
+S61|Použít modifikátory ze složky PhoneModify ve složce hry (soubory .txt): limity volání kreslení a primitiv na snímek (maxdraws/maxprims), náhrada klíčů enginu (ini <sekce> <klíč> <hodnota>), zápis bajtů do paměti hry (patch <adresa> <bajty>). Šablonu vytvoří generátor: me1cfg --game ... modgen balanced|aggressive|off. Pozor: limity a záplaty mění obraz
+S62|Softwarové (doporučeno)
+S63|Průhlednost tlačítek, %
+S64|Rozmazání pohybu
+S65|Rozlišení
+S66|Ruština
+S67|Nejnáročnější volba pro slabé GPU
+S68|Dotykové ovládání
+S69|Slabé GPU (Mali-G52/G57, Adreno 610–619): 960×540, bez stínů a postprocessingu, 30 FPS
+S70|Obtížnost
+S71|Střední
+S72|Střední
+S73|Střední
+S74|Střední (do 1024)
+S75|Titulky
+S76|Odstraňuje trhání obrazu
+S77|Ovládání
+S78|Zjednodušený výpočet
+S79|Zařízení ISACT; v portu jde zvuk přes OpenAL Soft
+S80|Filtrování textur
+S81|Vlajkové lodě
+S82|Francouzština
+S83|Hardcore
+S84|Čeština
+S85|Citlivost rozhlížení
+S86|Obrazovka
+S87|Tlačítka a páčky na obrazovce
+S88|Jazyk textu
+S89|Jas obrazu (výchozí 1.6)
+F0|GPU nerozpoznáno (
+F1|→ třída «
+F2|; málo RAM → «
+F3|; CPU do
+F4|GHz → «
+F5|RAM
+F6|GB,
+F7|jader
+F8|do
+F9|GHz,
+F10|obrazovka
+F11|render
+F12|minimální
+F13|nízká
+F14|střední
+F15|vysoká
+F16|maximální
+F17|chyba:
+F18|nepodařilo se vytvořit složku pro
+F19|chyba zápisu
+F20|přepsání:
+F21|.ini hra ještě nevytvořila — hodnoty se do něj zapíšou při prvním spuštění
+F22|aktualizováno:
+F23|nastavení nenačtena
+F24|Složka hry:
+F25|Dokumenty (pro hru):
+F26|(chyba)
+F27|BIOEngine.ini (vytvořený hrou)
+F28|DefaultEngine.ini + nastavení portu
+F29|Konfigurace hry nenalezena — zkopírujte hru do složky výše.
+F30|Hra načte (
+F31|Rozlišení X
+F32|Rozlišení Y
+F34|Filtrování
+F38|Gama
+F39|Jazyk
+F40|: očekává se 0/1
+F41|: očekává se celé číslo
+F42|: povoleno
+F43|: očekává se číslo
+F44|: formát ŠÍŘKAxVÝŠKA, od 320x200
+F45|: neplatná hodnota '
+F46|neznámé nastavení '
+F47|neznámá předvolba '
+X0|Jazyk rozhraní
+X1|Jazyk textu ve hře
+X2|Přepnout i jazyk textu ve hře na
+X3|? Ve složce hry musí být lokalizační soubory tohoto jazyka.
+X4|Ano
+X5|Ne

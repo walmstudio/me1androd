@@ -1,0 +1,213 @@
+--- a/src/egl/drivers/dri2/platform_surfaceless.c
++++ b/src/egl/drivers/dri2/platform_surfaceless.c
+@@ -389,7 +389,8 @@
+     */
+    driver_loaded = surfaceless_probe_device(disp, disp->Options.ForceSoftware,
+                                             disp->Options.Zink);
+-   if (!driver_loaded && disp->Options.ForceSoftware) {
++   /* me1port: zink on Android has no DRM render node -> use it through the kopper/swrast loader */
++   if (!driver_loaded && (disp->Options.ForceSoftware || disp->Options.Zink)) {
+       _eglLog(_EGL_DEBUG, "Falling back to surfaceless swrast without DRM.");
+       driver_loaded = surfaceless_probe_device_sw(disp);
+    }
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -78,7 +78,10 @@
+ #else
+ #define VK_LIBNAME "libvulkan.so.1"
+ #endif
++
+ #endif
++static bool me1_loader_external; /* me1port */
++
+ 
+ #ifdef __APPLE__
+ #include "MoltenVK/mvk_vulkan.h"
+@@ -1686,7 +1689,7 @@
+    }
+    simple_mtx_destroy(&screen->bindless_handles.lock);
+ 
+-   if (screen->loader_lib)
++   if (screen->loader_lib && !me1_loader_external)
+       util_dl_close(screen->loader_lib);
+ 
+ #ifdef HAVE_LIBDRM
+@@ -2046,8 +2049,10 @@
+    if (result != VK_SUCCESS) {
+       mesa_loge("ZINK: vkGetPhysicalDeviceCalibrateableTimeDomainsEXT failed (%s)", vk_Result_to_str(result));
+    }
+-   assert(num_domains > 0);
+-   assert(num_domains < ARRAY_SIZE(domains));
++   if (num_domains > ARRAY_SIZE(domains))
++      num_domains = ARRAY_SIZE(domains);   /* me1port: VK_INCOMPLETE instead of a stack overflow */
++   if (!num_domains)
++      return false;
+ 
+    result = VKSCR(GetPhysicalDeviceCalibrateableTimeDomainsEXT)(screen->pdev, &num_domains, domains);
+    if (result != VK_SUCCESS) {
+@@ -3442,7 +3447,13 @@
+ 
+    u_trace_state_init();
+ 
+-   screen->loader_lib = util_dl_open(VK_LIBNAME);
++   /* me1port: a Vulkan loader handle opened by the app (libadrenotools custom driver), passed as hex */
++   const char *me1_vkh = getenv("ZINK_VK_LOADER_HANDLE");
++   if (me1_vkh && *me1_vkh) {
++      screen->loader_lib = (struct util_dl_library *)(uintptr_t)strtoull(me1_vkh, NULL, 0);
++      me1_loader_external = true;
++   } else
++      screen->loader_lib = util_dl_open(VK_LIBNAME);
+    if (!screen->loader_lib) {
+       if (!screen->driver_name_is_inferred)
+          mesa_loge("ZINK: failed to load "VK_LIBNAME);
+@@ -3474,6 +3485,7 @@
+       instance = zink_create_instance(screen, &instance_info);
+    }
+    if (!instance) {
++      mesa_loge("ZINK(me1): no Vulkan instance");
+       /* We don't decrement instance_refcount here. This prevents us from trying
+        * to create another instance on subsequent calls.
+        */
+@@ -3528,9 +3540,11 @@
+ 
+    if (!zink_get_physical_device_info(screen)) {
+       if (!screen->driver_name_is_inferred)
+-         debug_printf("ZINK: failed to detect features\n");
++         mesa_loge("ZINK: failed to detect features (a required Vulkan extension is missing, see above)");
+       goto fail;
+    }
++   if (!screen->info.have_KHR_maintenance5)
++      mesa_logw("ZINK(me1): no VK_KHR_maintenance5 - continuing without it");
+ 
+    if (!screen->info.rb2_feats.nullDescriptor) {
+       mesa_loge("Zink requires the nullDescriptor feature of KHR/EXT robustness2.");
+@@ -3615,8 +3629,10 @@
+    disable_features(screen);
+ 
+    struct zink_device *zdev = zink_create_logical_device(screen);
+-   if (!zdev->dev)
++   if (!zdev->dev) {
++      mesa_loge("ZINK(me1): logical device creation failed");
+       goto fail;
++   }
+    screen->dev = zdev->dev;
+    screen->queue_lock = &zdev->queue_lock;
+ 
+@@ -3650,8 +3666,11 @@
+       screen->desc_set_id[ZINK_DESCRIPTOR_BINDLESS] = 5;
+    }
+ 
+-   if (screen->info.have_EXT_calibrated_timestamps && !check_have_device_time(screen))
+-      goto fail;
++   /* me1port: a driver without the device time domain just loses calibrated timestamps (upstream: screen failure, silently) */
++   if (screen->info.have_EXT_calibrated_timestamps && !check_have_device_time(screen)) {
++      mesa_logw("ZINK(me1): calibrated timestamps without VK_TIME_DOMAIN_DEVICE - using timestamp queries");
++      screen->info.have_EXT_calibrated_timestamps = false;
++   }
+ 
+    screen->have_triangle_fans = true;
+ #if defined(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME)
+@@ -3726,8 +3745,10 @@
+       }
+    }
+ 
+-   if (!zink_screen_resource_init(&screen->base))
++   if (!zink_screen_resource_init(&screen->base)) {
++      mesa_loge("ZINK(me1): resource init failed");
+       goto fail;
++   }
+    if (!zink_bo_init(screen)) {
+       if (!screen->driver_name_is_inferred)
+          mesa_loge("ZINK: failed to initialize suballocator");
+@@ -3742,8 +3763,10 @@
+       goto fail;
+    }
+    if (!util_queue_init(&screen->cache_get_thread, "zcfq", 8, 4,
+-                        UTIL_QUEUE_INIT_RESIZE_IF_FULL, screen))
++                        UTIL_QUEUE_INIT_RESIZE_IF_FULL, screen)) {
++      mesa_loge("ZINK(me1): cache thread init failed");
+       goto fail;
++   }
+    populate_format_props(screen);
+ 
+    slab_create_parent(&screen->transfer_pool, sizeof(struct zink_transfer), 16);
+@@ -3883,6 +3906,7 @@
+    return screen;
+ 
+ fail:
++   mesa_loge("ZINK(me1): screen creation failed");
+    zink_destroy_screen(&screen->base);
+    return NULL;
+ }
+--- a/src/gallium/drivers/zink/zink_device_info.py
++++ b/src/gallium/drivers/zink/zink_device_info.py
+@@ -66,10 +66,9 @@
+     Extension("VK_KHR_maintenance4",
+               alias="maint4",
+               features=True),
+-    Extension("VK_KHR_maintenance5",
++    Extension("VK_KHR_maintenance5",   # me1port: optional (only point-size/buffer-usage niceties)
+               alias="maint5",
+-              features=True, properties=True,
+-              required=True),
++              features=True, properties=True),
+     Extension("VK_KHR_maintenance6",
+               alias="maint6",
+               features=True, properties=True),
+@@ -787,7 +786,7 @@
+          %else:
+          } else {
+          %endif
+-            debug_printf("ZINK: ${ext.name} required!\\n");
++            mesa_loge("ZINK: ${ext.name} required! (me1port: the Vulkan driver lacks it)");
+             goto fail;
+       %endif
+          }
+--- a/src/gallium/drivers/zink/zink_context.c
++++ b/src/gallium/drivers/zink/zink_context.c
+@@ -1030,7 +1030,8 @@
+          NULL,
+          VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT
+       };
+-      bvci.pNext = &usage;
++      if (screen->info.have_KHR_maintenance5)   /* me1port: maintenance5 is optional */
++         bvci.pNext = &usage;
+       if (zink_get_format_props(screen, format)->bufferFeatures & VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT)
+          usage.usage |= VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
+ 
+--- a/src/gallium/frontends/dri/kopper.c
++++ b/src/gallium/frontends/dri/kopper.c
+@@ -78,9 +78,13 @@
+ 
+    if (success)
+       pscreen = pipe_loader_create_screen(screen->dev, driver_name_is_inferred);
++   else
++      mesa_loge("kopper(me1): no zink pipe-loader device");
+ 
+-   if (!pscreen)
++   if (!pscreen) {
++      mesa_loge("kopper(me1): zink screen creation failed");
+       return NULL;
++   }
+ 
+    assert(pscreen->caps.device_reset_status_query);
+    screen->is_sw = zink_kopper_is_cpu(kopper_get_zink_screen(pscreen));
+--- a/src/gallium/frontends/dri/dri_screen.c
++++ b/src/gallium/frontends/dri/dri_screen.c
+@@ -34,6 +34,7 @@
+ #include "dri_helpers.h"
+ 
+ #include "util/u_inlines.h"
++#include "util/log.h"
+ #include "pipe/p_screen.h"
+ #include "util/format/u_formats.h"
+ #include "pipe-loader/pipe_loader.h"
+@@ -468,7 +469,7 @@
+    }
+ 
+    if (configs == NULL) {
+-      debug_printf("%s: driCreateConfigs failed\n", __func__);
++      mesa_loge("%s: driCreateConfigs failed - no supported render format (me1port)", __func__);
+       return NULL;
+    }
+ 

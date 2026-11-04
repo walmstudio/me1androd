@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.me1port.launcher" android:versionCode="33" android:versionName="1.0">
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="29" />
+    <!-- game files in /sdcard/MassEffect (legacy storage on Android 10; "all files access" fallback on 11+) -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- gamepad rumble (XInputSetState) on the phone when the controller has no vibrator -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <application android:label="Mass Effect Port" android:icon="@mipmap/ic_launcher"
+        android:theme="@android:style/Theme.Material" android:extractNativeLibs="true"
+        android:requestLegacyExternalStorage="true" android:allowBackup="false"
+        android:appCategory="game" android:isGame="true">
+        <activity android:name=".MainActivity" android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- the game: own process (a crash or exit does not take the launcher down), landscape, full screen -->
+        <activity android:name=".GameActivity" android:process=":game" android:exported="false"
+            android:screenOrientation="sensorLandscape" android:launchMode="singleTask"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density" />
+    </application>
+</manifest>

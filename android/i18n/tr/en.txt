@@ -1,0 +1,450 @@
+J0|LMB
+J1|RMB
+J2|Space
+J3|Layout saved
+J4|Drag the buttons and the stick. Tap ✓ when done
+J5|Button opacity
+J6|Button size
+J7|Stick size
+J8|Camera sensitivity
+J9|Invert camera vertically
+J10|Short tap on empty space = click
+J11|Vibrate on press
+J12|Stick on the right, buttons on the left (mirrored)
+J13|“Compiling shaders” indicator in game
+J14|XInput gamepad (Xbox): on-screen and physical gamepad act as the game controller (requires the ME1Controller mod)
+J15|Gamepad vibration (rumble, XInput)
+J16|…on the phone if the gamepad has no rumble motor
+J17|Which buttons to show…
+J18|Rearrange buttons (drag)
+J19|Reset layout
+J20|Buttons are in their default places
+J21|Reset everything
+J22|Control settings reset
+J23|Changes apply immediately.
+J24|In game: a long press on ⊕ opens these same settings and the
+J25|button rearranging mode (drag with a finger).
+J26|On-screen controls
+J27|Done
+J28|On-screen buttons
+J29|All
+J30|Cancel
+J31|no output
+J32|Mass Effect is starting…
+J33|%.1f FPS · %.1f ms · %s
+J34|· limit
+J35|Mass Effect is starting…
+J36|D3D shaders created:
+J37|HLSL compilation:
+J38|, from cache:
+J39|\nnow compiling a shader (%.1f s)
+J40|\nGPU programs:
+J41|(from cache
+J42|Compiling shaders. The first launch may take\nseveral minutes; the result is saved to the cache.
+J43|Loading game data…
+J44|⚙ compiling shader… %.1f s
+J45|⚙ building shaders (GL:
+J46|The video driver keeps crashing — restarting the game (shader caches are warm)
+J47|Settings moved (
+J48|files) from
+J49|Could not move settings from
+J50|Could not create
+J51|No access to
+J52|(already exists)
+J53|Not moved:
+J54|. Move them manually with a file manager from\n
+J55|\nto\n
+J56|File:
+J57|· library
+J58|· package version
+J59|· author:
+J60|unreadable:
+J61|the package has no Vulkan library (.so)
+J62|missing file
+J63|in the archive
+J64|Requires Android API
+J65|), you have
+J66|) — the driver will most likely not load.
+J67|Driver for
+J68|, but you have
+J69|— it will not work with this GPU.
+J70|cannot create
+J71|after unpacking there is no
+J72|cannot write
+J73|Settings chosen automatically
+J74|\n\nYou can change them below (presets and individual settings).
+J75|No gamepad connected (USB/Bluetooth gamepads are detected automatically).
+J76|Gamepad:
+J77|Keyboard and mouse (original game)
+J78|Xbox / XInput gamepad (ME1Controller mod)
+J79|The physical and on-screen gamepad (⊕ in game) work as an Xbox 360 controller. The original game has no
+J80|gamepad bindings — you need the ME1Controller mod (enable it below). The mod is designed for 16:9 and English hint text.
+J81|The gamepad emulates keyboard and mouse: left stick — WASD, right stick — camera, RT — fire, LT — aim, A — E, B — Q,
+J82|X — Space, Y — F, LB — R, RB — Shift, L3 — Ctrl, R3 — J, Start — Esc, Back — M, D-pad — arrows.
+J83|Menus — by touch.
+J84|⚠ No mod with gamepad bindings is enabled (Config/BIOInput.ini with XboxTypeS_…) — the gamepad will not work in game.
+J85|Mods:
+J86|/<mod name>/ (inside — Config and “Mass Effect”; files are substituted at launch,
+J87|the original is not changed)
+J88|— no mods
+J89|(gamepad)
+J90|Control profile: XInput gamepad
+J91|Control profile: keyboard and mouse
+J92|DLC in the game folder:
+J93|— none
+J94|files for
+J95|will be connected automatically when the DLC appears in the game folder (
+J96|System OpenGL ES (default)
+J97|System Vulkan — own D3D9→Vulkan renderer (new)
+J98|System Vulkan + Mesa Zink (experimental)
+J99|— not in the folder (system driver will be used)
+J100|Via Mesa Zink (OpenGL ES → Vulkan) instead of the own renderer
+J101|The device driver — the fastest and best-tested option.
+J102|Own renderer: the game's Direct3D 9 commands go straight to the device's Vulkan driver, without OpenGL ES and without Zink.
+J103|Only Vulkan 1.0 is needed (Mali-G52 and Adreno 6xx work); shaders are built into SPIR-V and cached. Frames are presented
+J104|via the swapchain, or via the CPU if there is none. If Vulkan fails to start, system OpenGL ES is used (“[vk]” lines in the log).
+J105|Mesa Zink 26.2.6 translates the game's OpenGL ES to the system Vulkan driver. Frames are shown via the CPU —
+J106|slower than the system option; for testing if it shows artifacts. If Vulkan fails to start, system OpenGL ES is used.
+J107|No package in
+J108|— the game will start with system OpenGL ES.
+J109|✗ Package is not suitable:
+J110|\nDefault — own D3D9→Vulkan renderer (only Vulkan 1.0 needed, frames via swapchain or CPU).
+J111|With the switch above — Mesa Zink 26.2.6 (needs Vulkan 1.1, VK_KHR_maintenance1 and VK_EXT_robustness2, frames via CPU).
+J112|If the driver fails to load, the game falls back to system OpenGL ES; the reason is in the log: “[vk]”, “[gl] … zink check” and “ZINK” lines.
+J113|Custom drivers: put a .zip in AdrenoTools format (meta.json + .so: Turnip, Qualcomm builds, Mali) or
+J114|a folder/.so into
+J115|/ — the list refreshes when you return to the launcher. Turnip and
+J116|Qualcomm drivers work only on Adreno, Mali drivers — only on Mali.
+J117|Refresh driver list
+J118|Drivers in the folder:
+J119|Driver
+J120|not found
+J121|Driver is not suitable:
+J122|— starting with system OpenGL ES
+J123|Driver
+J124|Preparing
+J125|Driver not unpacked
+J126|\n\nStart with system OpenGL ES?
+J127|Start
+J128|\n\nIf the driver fails to load, the game will start with system OpenGL ES.
+J129|Try anyway
+J130|System OpenGL ES
+J131|Mass Effect — Android port
+J132|\nAuto preset:
+J133|Game files
+J134|Game folder
+J135|(chosen manually)
+J136|No storage permission — without it the /sdcard/MassEffect folder is not visible.
+J137|Allow file access
+J138|Android 11+ does not allow reading /sdcard — enable “All files access”.
+J139|Open access settings
+J140|Copy the game folder (Binaries, BioGame, …) to /sdcard/MassEffect — it will be found automatically.
+J141|Folders named “Mass Effect” and similar are also searched in the root of internal storage and the SD card (and one level deeper).
+J142|The game is in the app's own folder — it will be deleted together with the app. Better move it to /sdcard/MassEffect.
+J143|Move to /sdcard/MassEffect
+J144|Move
+J145|Game moved to /sdcard/MassEffect
+J146|Saves and settings:
+J147|Check
+J148|Refresh
+J149|Game:
+J150|Game not found
+J151|Change folder
+J152|PhoneModify generator — cut the load (frame limits, effects)
+J153|Controls and mods
+J154|Graphics driver
+J155|Presets
+J156|Auto (recommended)
+J157|Auto preset:
+J158|— tap “Save”
+J159|Preset applied — tap “Save”
+J160|Save
+J161|Saved
+J162|Error
+J163|Defaults
+J164|Values from Default*.ini — tap “Save”
+J165|Start the game
+J166|The game opens full screen (separate process). Rendering: Direct3D 9 → OpenGL ES 3.
+J167|Controls: touch = mouse (one finger — left button, second finger — right), “Back” = Esc,
+J168|a USB/Bluetooth keyboard works like on a PC, gamepad — see “Controls and mods”. The ⊕ button in the top left corner shows the on-screen
+J169|controls: stick (WASD), LMB/RMB, E, Space, Shift, 1–4 etc.; swipe on empty space — camera,
+J170|long press on ⊕ — settings (opacity, size, sensitivity, button rearranging),
+J171|short tap — click. Videos (Bink) play with sound, skip — “Back” (Esc) or a tap
+J172|(if videos get in the way — ME1_BINK=0 in “Extra variables”). The first launch compiles shaders
+J173|(several minutes; progress is shown on the start screen). Log — Documents/me1exe_run.log, frame snapshots —
+J174|Documents/me1_frames (the first frame and every 1800th).
+J175|Last launch log
+J176|On-screen controls — settings
+J177|Extra variables (for experiments)
+J178|Windowless test (90 s, frames → Documents/me1_frames)
+J179|The same MassEffect.exe, but in a separate windowless program: frames are drawn to memory and every 300th
+J180|is saved as PNG; it exits 90 s after the first frame. The output is shown right here.
+J181|(custom)
+J182|✓ Game found
+J183|(no BioGame\\CookedPC)
+J184|✓ Configs found, ✗ no Binaries\\MassEffect.exe
+J185|✗ Game not found — settings will be saved and applied after copying
+J186|One NAME=value pair per line (or separated by spaces). Empty field — all defaults.
+J187|Full list with descriptions — button below (tapping a line adds it to the field).
+J188|List of variables…
+J189|Extra variables
+J190|Clear
+J191|Videos and sound
+J192|do not load binkw32.dll: all videos are skipped
+J193|no DirectSound: videos without sound
+J194|DirectSound log (video buffers, mixer)
+J195|turn off all game sound (OpenAL)
+J196|master volume (1 = 100 %, up to 2)
+J197|audio output rate, Hz (8000–192000; default — the device's native rate)
+J198|verbose sound log (0 — no log, 1 — default)
+J199|tell the game IMA4 ADPCM compression is supported (default: no)
+J200|do not output sound to the device (with ME1_AL_WAV — record the mix to a file)
+J201|record the mix to WAV (only with ME1_AL_SINK=null)
+J202|Graphics
+J203|exact D3D9 float emulation (0·∞ = 0) also in mul/mad/dp: fixes black/white dots, slower; 0 — off, 1 — default
+J204|simplified rendering (same as the “Simplified rendering” switch in “Graphics”): no dynamic shadows or character shadows, simple lightmaps, no blur/depth of field/flares/decals, bilinear filtering, lower character LOD; FP16 where the game allows half, 5 ms timer, 32 kHz sound; 0 — off
+J205|simplified rendering without engine settings (shaders, timer and sound only)
+J206|simplified rendering: do not touch the listed engine parameters (DynamicShadows, LightEnvironmentShadows, DirectionalLightmaps, MotionBlur, DepthOfField, QualityBloom, LensFlares, DynamicDecals, Trilinear, MaxAnisotropy, SkeletalMeshLODBias, DetailMode, EnableDynamicShadows)
+J207|do not pin threads to cores (by default the game and render threads run on fast cores, the rest on slow ones)
+J208|apply modifiers from <game folder>/PhoneModify (same as the “PhoneModify modifiers” switch): per-frame draw call/primitive limits, INI keys, code patches. Create a modifier: me1cfg modgen balanced|aggressive
+J209|FPS counter in the top right corner (same as “Show FPS” in the port settings)
+J210|limit the frame rate (10–240): less heat and battery drain; 0 — unlimited
+J211|renderer: vulkan — own D3D9→Vulkan, gles — OpenGL ES, zink — OpenGL ES via Mesa Zink (usually set by the launcher)
+J212|Vulkan: VK_LAYER_KHRONOS_validation layer if present (slow, for debugging)
+J213|Vulkan: behave like the weakest driver (no BC compression, no float filtering) — for testing
+J214|Vulkan: submit the frame in parts of N draw calls — works around the Mali driver crash (DEVICE_LOST on the first heavy frame). On by default (2048); 0 — single submit, as in v0.10.2
+J215|do not measure GPU time per frame (the “[d3d] frame … GPU … ms/frame” line in the log)
+J216|turn off invariant gl_Position: slightly faster, but stripes/flicker on lit surfaces are possible (1 — default)
+J217|DXT textures (unpacked on the CPU) to RGBA8: better quality, more memory; 1 — default (DXT1 → RGB5A1); 2 — also DXT3/5 → RGBA4
+J218|limit texture size (512, 1024, 2048): less memory and loading, lower sharpness
+J219|do not use hardware S3TC/DXT compression even if the GPU supports it (unpack on the CPU)
+J220|do not use hardware RGTC compression (ATI1/ATI2)
+J221|how much video memory to report to the game, MB (default 512)
+J222|“desktop” resolution for the game (default — the device screen)
+J223|no rendering (black screen) — only for hunting crashes
+J224|graphics driver: vulkan — own renderer on system Vulkan, zink — Mesa Zink on system Vulkan, /path/vulkan.xxx.so — custom driver (with the own renderer by default, ME1_GPU_ZINK=1 — via Zink), system — system GLES (usually set by the launcher, “Graphics driver” section)
+J225|present frames via the CPU (ANativeWindow) also with system GLES — for testing; enabled automatically with Zink
+J226|Mesa Zink debug flags (compact, nobgc, …); MESA_LOG/MESA_DEBUG also work
+J227|Caches
+J228|do not save linked GL programs (cache in app storage, speeds up later launches)
+J229|do not use the compiled HLSL shader cache (Documents/me1_hlsl_cache): compile on every launch
+J230|no directory cache (Win32 file layer)
+J231|Time, threads, input
+J232|multimedia timer period, ms (1–100, default 2)
+J233|turn off multimedia timers (timeSetEvent)
+J234|pause in Sleep(0) wait loops, µs (default 100; 0 — yield only, more CPU load)
+J235|how many frames after a touch the game receives the mouse button press (lets the cursor move first)
+J236|how many frames the mouse button stays pressed before release
+J237|XInput gamepad: 0 — none, 1 — always connected (set by the launcher in the “Gamepad” profile), default — after the first press
+J238|Frame snapshots and logs
+J239|save every Nth frame to Documents/me1_frames (default 1800)
+J240|(empty value) do not save frames
+J241|Direct3D call log (2 — very verbose and slow)
+J242|check OpenGL errors after every call (slow)
+J243|save GLSL sources of programs that failed to link
+J244|save bytecode of all shaders (shaders.pak)
+J245|period of the [hb] status line in the log, s (0 — off, default 10)
+J246|sampling profiler rate in the [hb] line, Hz (default 100)
+J247|do not copy the engine log (Logs/*.log) into me1exe_run.log
+J248|file access log (2 — more detail)
+J249|input log (mouse, keyboard)
+J250|window message and cursor log
+J251|thread creation and synchronization log
+J252|exception log (SEH / C++)
+J253|registry access log
+J254|list all unimplemented Windows functions
+J255|do not reuse freed memory (bug hunting; memory grows!)
+J256|turn off the PhysX memory watchdog (watches 12283ce0 by default)
+J257|close the game N seconds after the first frame
+J258|close the game after N frames
+J259|Set by the launcher (can be overridden)
+J260|do not load d3dx9_31.dll — without the HLSL compiler shaders will not build (all — all D3DX functions from the dll)
+J261|ME1_D3DX_DLL=/path/d3dx9_31.dll
+J262|custom d3dx9_31.dll (default — from the APK)
+J263|mod folders separated by “:” (on top of the game and Documents/…/Config; the launcher sets the enabled mods)
+J264|Variables (tap to add)
+J265|— adjust the value if needed
+J266|Close
+J267|Auto — by device (SoC:
+J268|)  [recommended]
+J269|light — shadows only (almost lossless)
+J270|balanced — particles/shadows/decals/LOD, limit of 6000 draw calls and 3M primitives
+J271|aggressive — + MotionBlur/DoF/bloom off, scene 70%, limit 3500 and 1.8M
+J272|extreme — everything at minimum, scene 60%, limit 2500 and 1.2M
+J273|cpu — for powerful GPUs with a slow CPU: no resolution reduction, limit 1200 and 300K
+J274|off — remove the modifier and turn the mode off
+J275|PhoneModify generator
+J276|# Enable: the "PhoneModify modifiers" switch in the launcher (or ME1_PHONE_MOD=1).\n
+J277|# Check in the log: [mod] PhoneModify active: ... and ', capped N draws' in the frame line.\n\n
+J278|# poorer particles: PeakDrift snowfall and other hogs\n
+J279|ini SystemSettings DynamicShadows False\nini SystemSettings LightEnvironmentShadows False    # shadow passes\n
+J280|ini SystemSettings DynamicDecals False        # blood/footprints: each one redraws geometry\n
+J281|ini SystemSettings DirectionalLightmaps False   # 1 lightmap instead of 3\n
+J282|ini SystemSettings DetailMode 1              # small environment details\n
+J283|# characters one LOD lower\n
+J284|ini SystemSettings MaxAnisotropy 1                 # anisotropy\n
+J285|ini SystemSettings ScreenPercentage 70            # scene at 70% resolution, full-res interface\n
+J286|ini SystemSettings ScreenPercentage 60            # scene at 60% resolution, full-res interface\n
+J287|\n# Manual fine-tuning: uncomment and adjust.\n# maxdraws 2000\n# maxprims 800000\n# ini SystemSettings ScreenPercentage 50\n# patch 10e7dc00 90 90 90        # example: bytes at an address from the log (m_10e7dc00)\n
+J288|phone_tune.txt deleted, modifiers turned off
+J289|Created PhoneModify/phone_tune.txt (
+J290|), modifiers turned on
+J291|Path to the folder with Binaries and BioGame. “Auto” — search /sdcard/MassEffect and similar.\nChecked:
+J292|Select
+J293|No game found in this folder — the path is saved anyway
+J294|Auto
+J295|What the game will see
+J296|This APK build has no libme1run.so
+J297|Starting
+J298|Windowless test: MassEffect.exe
+J299|(log not written:
+J300|\nExit code:
+J301|s
+J302|\nLaunch error:
+J303|No log:
+J304|Engine log not found in
+J305|Engine log (
+S0|100% (no scaling)
+S1|30 fps
+S2|45 fps
+S3|60 fps
+S4|Bloom, depth of field, etc.
+S5|Language in [Engine.Engine]; the matching localization files are required
+S6|Renderer MaxTextureSize
+S7|MouseSensitivity (touch look and mouse)
+S8|ScreenPercentage: the 3D scene is rendered at a lower resolution and stretched, the interface and text stay sharp. 75% at 1280×720 — a 960×540 scene: noticeably less GPU load. Experimental: if the picture does not fill the screen, set 100% back
+S9|Snapdragon 7xx / Dimensity 900 and higher
+S10|Snapdragon 8 Gen 2/3/Elite, Dimensity 9200+: 1080p, shadows, 60 FPS
+S11|TextureLODLevel: maximum size of world and character textures
+S12|Autosave
+S13|English
+S14|Hardware
+S15|Unlimited
+S16|Insanity
+S17|Hungarian
+S18|Vertical sync
+S19|Veteran
+S20|Internal render resolution; the picture is scaled to the full screen
+S21|High
+S22|High (up to 2048)
+S23|High
+S24|High
+S25|Gamma
+S26|Graphics
+S27|Texture detail
+S28|Particle detail
+S29|Dynamic shadows
+S30|Sound
+S31|Sound device
+S32|Film grain
+S33|Default value for a new profile
+S34|Game
+S35|Spanish
+S36|Italian
+S37|Sound channels
+S38|Casual
+S39|Max texture size
+S40|Maximum (up to 4096)
+S41|Maximum
+S42|3D scene scale
+S43|Less heat and battery drain
+S44|Minimal
+S45|PhoneModify modifiers
+S46|Android is always full screen; affects the setres command
+S47|German
+S48|Low
+S49|Low (up to 512)
+S50|Low
+S51|Low
+S52|Normal
+S53|Lightweight mode for weak devices. Engine lighting and effects: no dynamic shadows or character shadows, simple lightmaps, no motion blur, depth of field, lens flares or dynamic decals, simplified bloom, bilinear filtering, characters one LOD step lower, no small environment details. Shaders in half precision (FP16) where the game allows half, cheap sRGB; 5 ms sound timer and 32 kHz sound. Your settings in BIOEngine.ini are not changed — the mode is applied in memory and turns off without a trace. Faster, the picture is noticeably simpler
+S54|FPS limit
+S55|Simultaneous sound sources (fewer — faster)
+S56|Very weak GPUs (PowerVR GE8xxx, Adreno 50x, Mali-G31/G51): 640×360, simplified rendering
+S57|Show FPS
+S58|Full screen
+S59|Polish
+S60|Post-processing
+S61|Apply modifiers from the PhoneModify folder in the game folder (.txt files): per-frame draw call and primitive limits (maxdraws/maxprims), engine key overrides (ini <section> <key> <value>), writing bytes into game memory (patch <address> <bytes>). A template is created by the generator: me1cfg --game ... modgen balanced|aggressive|off. Careful: limits and patches change the picture
+S62|Software (recommended)
+S63|Button opacity, %
+S64|Motion blur
+S65|Resolution
+S66|Russian
+S67|The heaviest option for weak GPUs
+S68|Touch controls
+S69|Weak GPUs (Mali-G52/G57, Adreno 610–619): 960×540, no shadows or post-processing, 30 FPS
+S70|Difficulty
+S71|Medium
+S72|Medium
+S73|Medium
+S74|Medium (up to 1024)
+S75|Subtitles
+S76|Removes screen tearing
+S77|Controls
+S78|Simplified rendering
+S79|ISACT device; in the port sound goes through OpenAL Soft
+S80|Texture filtering
+S81|Flagships
+S82|French
+S83|Hardcore
+S84|Czech
+S85|Look sensitivity
+S86|Screen
+S87|On-screen buttons and sticks
+S88|Text language
+S89|Image brightness (default 1.6)
+F0|GPU not recognized (
+F1|→ class «
+F2|; low RAM → «
+F3|; CPU up to
+F4|GHz → «
+F5|RAM
+F6|GB,
+F7|cores
+F8|up to
+F9|GHz,
+F10|screen
+F11|render
+F12|minimal
+F13|low
+F14|medium
+F15|high
+F16|maximum
+F17|error:
+F18|could not create a folder for
+F19|write error
+F20|overrides:
+F21|.ini has not been created by the game yet — the values will go into it on the first launch
+F22|updated:
+F23|settings not loaded
+F24|Game folder:
+F25|My Documents (for the game):
+F26|(error)
+F27|BIOEngine.ini (created by the game)
+F28|DefaultEngine.ini + port settings
+F29|Game configuration not found — copy the game to the folder above.
+F30|The game will read (
+F31|Resolution X
+F32|Resolution Y
+F33|Texture detail
+F34|Filtering
+F35|Dynamic shadows
+F36|Post-processing
+F37|Sound channels
+F38|Gamma
+F39|Language
+F40|: 0/1 expected
+F41|: integer expected
+F42|: allowed
+F43|: number expected
+F44|: format WIDTHxHEIGHT, from 320x200
+F45|: invalid value '
+F46|unknown setting '
+F47|unknown preset '
+X0|Interface language
+X1|In-game text language
+X2|Also switch the in-game text language to
+X3|? The game folder must contain this language's localization files.
+X4|Yes
+X5|No

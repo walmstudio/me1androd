@@ -1,0 +1,367 @@
+J0|Clic izq.
+J1|Clic der.
+J2|Espacio
+J3|Disposición guardada
+J4|Arrastra los botones y el stick. Toca ✓ para terminar
+J5|Transparencia de botones
+J6|Tamaño de botones
+J7|Tamaño del stick
+J8|Sensibilidad de la cámara
+J9|Invertir la cámara verticalmente
+J10|Toque breve en zona libre = clic
+J11|Vibración al pulsar
+J12|Stick a la derecha, botones a la izquierda (en espejo)
+J13|Indicador «compilación de shaders» en el juego
+J14|Mando XInput (Xbox): el mando en pantalla y el físico actúan como mando del juego (requiere el mod ME1Controller)
+J15|Vibración del mando (respuesta, XInput)
+J16|…en el teléfono si el mando no tiene motor de vibración
+J17|Qué botones mostrar…
+J18|Recolocar botones (arrastrando)
+J19|Restablecer disposición
+J20|Botones en su lugar predeterminado
+J21|Todo por defecto
+J22|Ajustes de control restablecidos
+J23|Los cambios se aplican al instante.
+J24|En el juego: una pulsación larga en ⊕ abre estos mismos ajustes y el modo
+J25|de recolocar botones (arrastrando con el dedo).
+J26|Controles en pantalla
+J27|Listo
+J28|Botones en pantalla
+J29|Todos
+J30|Cancelar
+J31|sin salida
+J32|Iniciando Mass Effect…
+J33|%.1f FPS · %.1f ms · %s
+J34|· límite
+J35|Iniciando Mass Effect…
+J36|Shaders D3D creados:
+J37|Compilación HLSL:
+J38|, desde caché:
+J39|\ncompilando un shader (%.1f s)
+J40|\nProgramas GPU:
+J41|(desde caché
+J42|Compilando shaders. El primer inicio puede tardar\nvarios minutos; el resultado se guarda en caché.
+J43|Cargando datos del juego…
+J44|⚙ compilando shader… %.1f s
+J45|⚙ creando shaders (GL:
+J46|El controlador de vídeo falla una y otra vez — reiniciando el juego (las cachés de shaders están listas)
+J47|Ajustes trasladados (
+J48|archivos) desde
+J49|No se pudieron trasladar los ajustes desde
+J50|No se pudo crear
+J51|Sin acceso a
+J52|(ya existe)
+J53|No trasladado:
+J54|. Muévelos a mano con un gestor de archivos desde\n
+J55|\na\n
+J56|Archivo:
+J57|· biblioteca
+J58|· versión del paquete
+J59|· autor:
+J60|no se puede leer:
+J61|el paquete no tiene biblioteca Vulkan (.so)
+J62|falta el archivo
+J63|en el archivo comprimido
+J64|Requiere Android API
+J65|), tienes
+J66|) — lo más probable es que el controlador no cargue.
+J67|Controlador para
+J68|, pero tienes
+J69|— con esta GPU no funcionará.
+J70|no se puede crear
+J71|tras descomprimir falta
+J72|no se puede escribir
+J73|Ajustes elegidos automáticamente
+J74|\n\nPuedes cambiarlos abajo (preajustes y ajustes individuales).
+J75|No hay mando conectado (los mandos USB/Bluetooth se detectan automáticamente).
+J76|Mando:
+J77|Teclado y ratón (juego original)
+J78|Mando Xbox / XInput (mod ME1Controller)
+J79|El mando físico y el de pantalla (⊕ en el juego) funcionan como un mando de Xbox 360. El juego original no tiene
+J80|asignaciones de mando — hace falta el mod ME1Controller (actívalo abajo). El mod está pensado para 16:9 y textos de ayuda en inglés.
+J81|El mando emula teclado y ratón: stick izquierdo — WASD, derecho — cámara, RT — disparo, LT — apuntar, A — E, B — Q,
+J82|X — Espacio, Y — F, LB — R, RB — Shift, L3 — Ctrl, R3 — J, Start — Esc, Back — M, cruceta — flechas.
+J83|Menús — tocando.
+J84|⚠ No hay ningún mod con asignaciones de mando activo (Config/BIOInput.ini con XboxTypeS_…) — el mando no funcionará en el juego.
+J85|Mods:
+J86|/<nombre del mod>/ (dentro — Config y «Mass Effect»; los archivos se sustituyen al iniciar,
+J87|el original no cambia)
+J88|— sin mods
+J89|(mando)
+J90|Perfil de control: mando XInput
+J91|Perfil de control: teclado y ratón
+J92|DLC en la carpeta del juego:
+J93|— ninguno
+J94|archivos para
+J95|se activarán solos cuando el DLC aparezca en la carpeta del juego (
+J96|OpenGL ES del sistema (predeterminado)
+J97|Vulkan del sistema — renderizador D3D9→Vulkan propio (nuevo)
+J98|Vulkan del sistema + Mesa Zink (experimental)
+J99|— no está en la carpeta (se usará el del sistema)
+J100|Mediante Mesa Zink (OpenGL ES → Vulkan) en lugar del renderizador propio
+J101|Controlador del dispositivo — la opción más rápida y probada.
+J102|Renderizador propio: los comandos Direct3D 9 del juego van directamente al controlador Vulkan del dispositivo, sin OpenGL ES ni Zink.
+J103|Solo hace falta Vulkan 1.0 (sirven Mali-G52 y Adreno 6xx); los shaders se compilan a SPIR-V y se guardan en caché. Los fotogramas salen
+J104|por la swapchain o, si no la hay, por la CPU. Si Vulkan no arranca — OpenGL ES del sistema (líneas «[vk]» en el registro).
+J105|Mesa Zink 26.2.6 traduce el OpenGL ES del juego al controlador Vulkan del sistema. Los fotogramas salen por la CPU —
+J106|más lento que la opción del sistema; para pruebas si hay artefactos. Si Vulkan no arranca — OpenGL ES del sistema.
+J107|No hay paquete en
+J108|— el juego se iniciará con OpenGL ES del sistema.
+J109|✗ Paquete no válido:
+J110|\nPor defecto — renderizador D3D9→Vulkan propio (solo hace falta Vulkan 1.0, fotogramas por swapchain o CPU).
+J111|Con el interruptor de arriba — Mesa Zink 26.2.6 (requiere Vulkan 1.1, VK_KHR_maintenance1 y VK_EXT_robustness2, fotogramas por CPU).
+J112|Si el controlador no carga, el juego pasa solo a OpenGL ES del sistema; la causa está en el registro: líneas «[vk]», «[gl] … zink check» y «ZINK».
+J113|Controladores propios: pon un .zip en formato AdrenoTools (meta.json + .so: Turnip, compilaciones de Qualcomm, Mali) o
+J114|una carpeta/.so en
+J115|/ — la lista se actualiza al volver al lanzador. Los controladores Turnip y
+J116|Qualcomm solo funcionan en Adreno, los de Mali — solo en Mali.
+J117|Actualizar lista de controladores
+J118|Controladores en la carpeta:
+J119|Controlador
+J120|no encontrado
+J121|Controlador no válido:
+J122|— inicio con OpenGL ES del sistema
+J123|Controlador
+J124|Preparando
+J125|Controlador no descomprimido
+J126|\n\n¿Iniciar con OpenGL ES del sistema?
+J127|Iniciar
+J128|\n\nSi el controlador no carga, el juego se iniciará solo con OpenGL ES del sistema.
+J129|Probar de todos modos
+J130|OpenGL ES del sistema
+J131|Mass Effect — port para Android
+J132|\nPreajuste automático:
+J133|Archivos del juego
+J134|Carpeta del juego
+J135|(elegida manualmente)
+J136|Sin permiso de almacenamiento — sin él la carpeta /sdcard/MassEffect no es visible.
+J137|Permitir acceso a archivos
+J138|Android 11+ no permite leer /sdcard — activa «Acceso a todos los archivos».
+J139|Abrir ajustes de acceso
+J140|Copia la carpeta del juego (Binaries, BioGame, …) en /sdcard/MassEffect — se encontrará automáticamente.
+J141|También se buscan carpetas «Mass Effect» y similares en la raíz de la memoria y de la tarjeta SD (y un nivel más abajo).
+J142|El juego está en la carpeta de la app — se borrará junto con la app. Mejor muévelo a /sdcard/MassEffect.
+J143|Mover a /sdcard/MassEffect
+J144|Traslado
+J145|Juego movido a /sdcard/MassEffect
+J146|Partidas y ajustes:
+J147|Comprobar
+J148|Actualizar
+J149|Juego:
+J150|Juego no encontrado
+J151|Cambiar carpeta
+J152|Generador PhoneModify — reducir la carga (límites por fotograma, efectos)
+J153|Controles y mods
+J154|Controlador gráfico
+J155|Preajustes
+J156|Auto (recomendado)
+J157|Preajuste automático:
+J158|— toca «Guardar»
+J159|Preajuste aplicado — toca «Guardar»
+J160|Guardar
+J161|Guardado
+J162|Error
+J163|Por defecto
+J164|Valores de Default*.ini — toca «Guardar»
+J165|Iniciar el juego
+J166|El juego se abre a pantalla completa (proceso aparte). Renderizado: Direct3D 9 → OpenGL ES 3.
+J167|Controles: toque = ratón (un dedo — botón izquierdo, segundo dedo — derecho), «Atrás» = Esc,
+J168|un teclado USB/Bluetooth funciona como en PC, mando — ver «Controles y mods». El botón ⊕ arriba a la izquierda muestra los controles
+J169|en pantalla: stick (WASD), clic izq./der., E, Espacio, Shift, 1–4, etc.; deslizar en zona libre — cámara,
+J170|pulsación larga en ⊕ — ajustes (transparencia, tamaño, sensibilidad, recolocar botones),
+J171|toque breve — clic. Los vídeos (Bink) se ven con sonido, saltar — «Atrás» (Esc) o un toque
+J172|(si los vídeos molestan — ME1_BINK=0 en «Variables extra»). El primer inicio compila los shaders
+J173|(varios minutos; el progreso se muestra en la pantalla de inicio). Registro — Documents/me1exe_run.log, capturas de fotogramas —
+J174|Documents/me1_frames (el primer fotograma y cada 1800).
+J175|Registro del último inicio
+J176|Controles en pantalla — ajustes
+J177|Variables extra (para experimentos)
+J178|Prueba sin ventana (90 s, fotogramas → Documents/me1_frames)
+J179|El mismo MassEffect.exe, pero en un programa aparte sin ventana: los fotogramas se dibujan en memoria y cada 300
+J180|se guarda en PNG; termina 90 s después del primer fotograma. La salida se muestra aquí mismo.
+J181|(propio)
+J182|✓ Juego encontrado
+J183|(falta BioGame\\CookedPC)
+J184|✓ Configuraciones encontradas, ✗ falta Binaries\\MassEffect.exe
+J185|✗ Juego no encontrado — los ajustes se guardarán y se aplicarán tras copiarlo
+J186|Un par NOMBRE=valor por línea (o separados por espacios). Campo vacío — todo por defecto.
+J187|Lista completa con descripciones — botón de abajo (tocar una línea la añade al campo).
+J188|Lista de variables…
+J189|Variables extra
+J190|Borrar
+J191|Vídeos y sonido
+J202|Gráficos
+J227|Cachés
+J231|Tiempo, hilos, entrada
+J238|Capturas y registros
+J259|Las fija el lanzador (se pueden cambiar)
+J264|Variables (toca — añadir)
+J265|— ajusta el valor si hace falta
+J266|Cerrar
+J267|Auto — según el dispositivo (SoC:
+J268|)  [recomendado]
+J269|light — solo sombras (casi sin pérdidas)
+J270|balanced — partículas/sombras/calcomanías/LOD, límite de 6000 llamadas de dibujo y 3 M de primitivas
+J271|aggressive — + MotionBlur/DoF/bloom desactivados, escena 70 %, límite 3500 y 1,8 M
+J272|extreme — todo al mínimo, escena 60 %, límite 2500 y 1,2 M
+J273|cpu — para GPU potente con CPU lenta: sin bajar la resolución, límite 1200 y 300 mil
+J274|off — quitar el modificador y desactivar el modo
+J275|Generador PhoneModify
+J288|phone_tune.txt eliminado, modificadores desactivados
+J289|Creado PhoneModify/phone_tune.txt (
+J290|), modificadores activados
+J291|Ruta a la carpeta con Binaries y BioGame. «Auto» — buscar /sdcard/MassEffect y similares.\nComprobado:
+J292|Elegir
+J293|No se encontró el juego en esta carpeta — la ruta se guarda igualmente
+J294|Auto
+J295|Qué verá el juego
+J296|Esta compilación del APK no tiene libme1run.so
+J297|Iniciando
+J298|Prueba sin ventana: MassEffect.exe
+J299|(registro no escrito:
+J300|\nCódigo de salida:
+J301|s
+J302|\nError de inicio:
+J303|Sin registro:
+J304|No se encontró el registro del motor en
+J305|Registro del motor (
+S0|100 % (sin escalado)
+S1|30 fps
+S2|45 fps
+S3|60 fps
+S4|Bloom, profundidad de campo, etc.
+S5|Language en [Engine.Engine]; se necesitan los archivos de localización correspondientes
+S6|MaxTextureSize del renderizador
+S7|MouseSensitivity (vista táctil y ratón)
+S8|ScreenPercentage: la escena 3D se dibuja a menor resolución y se estira, la interfaz y el texto siguen nítidos. 75 % a 1280×720 — escena de 960×540: bastante menos carga en la GPU. Experimental: si la imagen no ocupa toda la pantalla, vuelve a 100 %
+S9|Snapdragon 7xx / Dimensity 900 o superior
+S10|Snapdragon 8 Gen 2/3/Elite, Dimensity 9200+: 1080p, sombras, 60 FPS
+S11|TextureLODLevel: tamaño máximo de las texturas del mundo y de los personajes
+S12|Autoguardado
+S13|Inglés
+S14|Hardware
+S15|Sin límite
+S16|Locura
+S17|Húngaro
+S18|Sincronización vertical
+S19|Veterano
+S20|Resolución interna de renderizado; la imagen se escala a toda la pantalla
+S21|Alta
+S22|Alta (hasta 2048)
+S23|Altos
+S24|Alto
+S25|Gamma
+S26|Gráficos
+S27|Detalle de texturas
+S28|Detalle de partículas
+S29|Sombras dinámicas
+S30|Sonido
+S31|Dispositivo de sonido
+S32|Grano de película
+S33|Valor predeterminado para un perfil nuevo
+S34|Juego
+S35|Español
+S36|Italiano
+S37|Canales de sonido
+S38|Fácil
+S39|Tamaño máx. de textura
+S40|Máxima (hasta 4096)
+S41|Máximos
+S42|Escala de la escena 3D
+S43|Menos calor y consumo de batería
+S44|Mínimos
+S45|Modificadores PhoneModify
+S46|En Android siempre a pantalla completa; afecta al comando setres
+S47|Alemán
+S48|Baja
+S49|Baja (hasta 512)
+S50|Bajos
+S51|Bajo
+S52|Normal
+S53|Modo ligero para dispositivos débiles. Iluminación y efectos del motor: sin sombras dinámicas ni sombras de personajes, mapas de luz simples, sin desenfoque de movimiento, profundidad de campo, destellos de lente ni calcomanías dinámicas, bloom simplificado, filtrado bilineal, personajes un nivel de LOD más bajo, sin pequeños detalles del entorno. Shaders en media precisión (FP16) donde el juego admite half, sRGB barato; temporizador de sonido de 5 ms y sonido a 32 kHz. Tus ajustes en BIOEngine.ini no cambian — el modo se aplica en memoria y se desactiva sin dejar rastro. Más rápido, la imagen es notablemente más simple
+S54|Límite de FPS
+S55|Fuentes de sonido simultáneas (menos — más rápido)
+S56|GPU muy débiles (PowerVR GE8xxx, Adreno 50x, Mali-G31/G51): 640×360, cálculo simplificado
+S57|Mostrar FPS
+S58|Pantalla completa
+S59|Polaco
+S60|Posprocesado
+S61|Aplicar modificadores de la carpeta PhoneModify en la carpeta del juego (archivos .txt): límites de llamadas de dibujo y primitivas por fotograma (maxdraws/maxprims), sustitución de claves del motor (ini <sección> <clave> <valor>), escritura de bytes en la memoria del juego (patch <dirección> <bytes>). La plantilla la crea el generador: me1cfg --game ... modgen balanced|aggressive|off. Cuidado: los límites y parches cambian la imagen
+S62|Software (recomendado)
+S63|Transparencia de botones, %
+S64|Desenfoque de movimiento
+S65|Resolución
+S66|Ruso
+S67|La opción más pesada para GPU débiles
+S68|Control táctil
+S69|GPU débiles (Mali-G52/G57, Adreno 610–619): 960×540, sin sombras ni posprocesado, 30 FPS
+S70|Dificultad
+S71|Medio
+S72|Medios
+S73|Media
+S74|Media (hasta 1024)
+S75|Subtítulos
+S76|Elimina el desgarro de imagen
+S77|Controles
+S78|Cálculo simplificado
+S79|Dispositivo ISACT; en el port el sonido va por OpenAL Soft
+S80|Filtrado de texturas
+S81|Gama alta
+S82|Francés
+S83|Extremo
+S84|Checo
+S85|Sensibilidad de la vista
+S86|Pantalla
+S87|Botones y sticks en pantalla
+S88|Idioma del texto
+S89|Brillo de la imagen (por defecto 1.6)
+F0|GPU no reconocida (
+F1|→ clase «
+F2|; poca RAM → «
+F3|; CPU hasta
+F4|GHz → «
+F5|RAM
+F6|GB,
+F7|núcleos
+F8|hasta
+F9|GHz,
+F10|pantalla
+F11|render
+F12|mínimo
+F13|bajo
+F14|medio
+F15|alto
+F16|máximo
+F17|error:
+F18|no se pudo crear la carpeta para
+F19|error de escritura
+F20|sustituciones:
+F21|.ini aún no lo ha creado el juego — los valores entrarán en él en el primer inicio
+F22|actualizado:
+F23|ajustes no cargados
+F24|Carpeta del juego:
+F25|Mis documentos (para el juego):
+F26|(error)
+F27|BIOEngine.ini (creado por el juego)
+F28|DefaultEngine.ini + ajustes del port
+F29|No se encontró la configuración del juego — copia el juego en la carpeta indicada arriba.
+F30|El juego leerá (
+F31|Resolución X
+F32|Resolución Y
+F34|Filtrado
+F38|Gamma
+F39|Idioma
+F40|: se espera 0/1
+F41|: se espera un entero
+F42|: permitido
+F43|: se espera un número
+F44|: formato ANCHOxALTO, desde 320x200
+F45|: valor no válido '
+F46|ajuste desconocido '
+F47|preajuste desconocido '
+X0|Idioma de la interfaz
+X1|Idioma del texto en el juego
+X2|¿Cambiar también el idioma del texto en el juego a
+X3|? La carpeta del juego debe tener los archivos de localización de este idioma.
+X4|Sí
+X5|No
