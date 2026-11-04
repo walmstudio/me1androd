@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#000000">
+    <link rel="icon" type="image/x-icon" href="images/favicon.ico">
+    <title>ME1PORT</title>
+    <link rel="stylesheet" href="style/main.css">
+
+    <style>
+        .build-instructions {
+            margin-top: 18px;
+            padding: 22px;
+            text-align: left;
+            color: #fff;
+            background: rgba(0, 0, 0, 0.68);
+            border: 1px solid rgba(54, 186, 255, 0.45);
+            border-radius: 10px;
+            line-height: 1.65;
+        }
+
+        .build-instructions[hidden] { display: none; }
+
+        .build-instructions h2 {
+            margin: 0 0 14px;
+            color: #36baff;
+            font-size: 20px;
+        }
+
+        .build-instructions h3 {
+            margin: 18px 0 8px;
+            color: #36baff;
+            font-size: 16px;
+        }
+
+        .build-instructions p { margin: 8px 0; }
+
+        .build-instructions code {
+            display: block;
+            margin: 8px 0;
+            padding: 10px;
+            overflow-wrap: anywhere;
+            color: #bfeaff;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 6px;
+            font-size: 12px;
+        }
+
+        .build-instructions .warning {
+            color: #ffd27a;
+            font-weight: bold;
+        }
+
+        .files-title {
+            margin: 24px 0 12px;
+            color: #fff;
+            font-size: 17px;
+            text-align: center;
+        }
+
+        .file-downloads {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+            margin-top: 12px;
+        }
+
+        .file-downloads .action-button {
+            min-width: 0;
+            overflow-wrap: anywhere;
+            font-size: 12px;
+        }
+
+        @media (max-width: 600px) {
+            .file-downloads { grid-template-columns: 1fr; }
+            .build-instructions { padding: 16px; }
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Фоновое видео -->
+    <video class="background-video"
+           autoplay muted loop playsinline preload="auto">
+        <source src="attractmovie.webm" type="video/webm">
+    </video>
+
+    <!-- Затемнение -->
+    <div class="background-overlay"></div>
+
+    <!-- Контент сайта -->
+    <div class="site-content">
+        <main>
+            <div class="hero-frame">
+
+                <div class="language-switcher">
+                    <button type="button" onclick="setLanguage('en')" title="English">🇬🇧</button>
+                    <button type="button" onclick="setLanguage('ru')" title="Русский">🇷🇺</button>
+                    <button type="button" onclick="setLanguage('de')" title="Deutsch">🇩🇪</button>
+                    <button type="button" onclick="setLanguage('fr')" title="Français">🇫🇷</button>
+                    <button type="button" onclick="setLanguage('it')" title="Italiano">🇮🇹</button>
+                    <button type="button" onclick="setLanguage('es')" title="Español">🇪🇸</button>
+                    <button type="button" onclick="setLanguage('pl')" title="Polski">🇵🇱</button>
+                    <button type="button" onclick="setLanguage('cs')" title="Čeština">🇨🇿</button>
+                    <button type="button" onclick="setLanguage('hu')" title="Magyar">🇭🇺</button>
+                </div>
+
+                <h1 data-i18n="title">Mass Effect 1 Port for Android</h1>
+                <p data-i18n="description">Experience the legendary universe of Mass Effect 1.</p>
+
+                <div class="action-buttons">
+                    <a href="#" class="action-button" data-i18n="download">Скачать</a>
+                    <a href="#" class="action-button" data-i18n="cache">Кэш игры</a>
+                    <a href="doc/me1.pdf" class="action-button" data-i18n="documentation">Документация</a>
+                </div>
+
+                <div class="action-buttons">
+                    <button type="button" class="action-button"
+                            id="build-toggle"
+                            aria-expanded="false"
+                            aria-controls="build-instructions">
+                        How to make build
+                    </button>
+                </div>
+
+                <section class="build-instructions" id="build-instructions" hidden>
+                    <h2>Как подготовить сборку</h2>
+
+                    <h3>1. Скачивание и распаковка</h3>
+                    <p>Скачайте торрент с первой частью Mass Effect по кнопке ниже и распакуйте скачанный архив/образ игры.</p>
+                    <p>После распаковки папка игры должна находиться по следующему пути:</p>
+                    <code>~/Загрузки/MassEffect_Trilogy_Linux/MassEffect_Linux/MassEffect</code>
+                    <p>Инструкция приведена для Linux. За Windows-версию автор инструкции не ручается.</p>
+
+                    <h3>2. Подготовка файлов игры</h3>
+                    <p>Откройте папку <b>game_info/data</b> внутри папки MassEffect. Там находятся файлы игры:</p>
+                    <code>~/Загрузки/MassEffect_Trilogy_Linux/MassEffect_Linux/MassEffect/game_info/data</code>
+                    <p class="warning">В эту папку игры обязательно скопируйте три DLL-файла, указанные в списке загрузок ниже. Они нужны для работы рекомпиляции.</p>
+
+                    <h3>3. Перенос на телефон</h3>
+                    <p>После подготовки папку игры можно перенести на телефон, например, в один из каталогов:</p>
+                    <code>/sdcard</code>
+                    <code>/storage/emulated/0/</code>
+
+                    <h3>4. Настройка управления</h3>
+                    <p>В архиве ниже находится мод для контроллеров. В корневой папке игры создайте папку <b>Mods</b> и поместите в неё папку мода.</p>
+                    <p>Затем в лаунчере включите этот мод и активируйте замену раскладки на раскладку контроллера.</p>
+                    <p><b>После этого сборка должна быть готова к запуску.</b></p>
+                </section>
+
+                <h3 class="files-title">Файлы для подготовки сборки</h3>
+                <div class="file-downloads">
+                    <a class="action-button" href="files/MassEffect_Trilogy.torrent" download>
+                        Скачать трилогию (Torrent)
+                    </a>
+                    <a class="action-button" href="files/d3dx9_31.dll" download>
+                        d3dx9_31.dll
+                    </a>
+                    <a class="action-button" href="files/msvcp80.dll" download>
+                        msvcp80.dll
+                    </a>
+                    <a class="action-button" href="files/msvcr80.dll" download>
+                        msvcr80.dll
+                    </a>
+                    <a class="action-button" href="files/ME1Controller-60-1-2-2.7z" download>
+                        ME1Controller-60-1-2-2.7z
+                    </a>
+                </div>
+
+                <!-- Фрейм WALM -->
+                <div class="walm-frame">
+                    <a href="https://walmstudio.github.io/site"
+                       class="walm-button"
+                       target="_blank"
+                       rel="noopener noreferrer">
+                        <img src="images/walm.png" alt="WALM Logo">
+                        <span>by WALM</span>
+                    </a>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="js/translations.js"></script>
+    <script>
+        const buildToggle = document.getElementById('build-toggle');
+        const buildInstructions = document.getElementById('build-instructions');
+
+        buildToggle.addEventListener('click', () => {
+            const isOpening = buildInstructions.hidden;
+            buildInstructions.hidden = !isOpening;
+            buildToggle.setAttribute('aria-expanded', String(isOpening));
+            buildToggle.textContent = isOpening ? 'Hide build instructions' : 'How to make build';
+        });
+    </script>
+</body>
+</html>
