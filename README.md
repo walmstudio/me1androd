@@ -1,0 +1,221 @@
+# me1port — Mass Effect (2007) на Android
+
+**v1.0** · arm64-v8a · Android 10+ (API 29) · OpenGL ES 3 / Vulkan 1.0
+
+Это порт оригинальной PC-версии Mass Effect на Android через **статическую перекомпиляцию**. Код `MassEffect.exe` и его DLL
+(x86-32) переводится в C и собирается под ARM64. Вокруг него работает рантайм, который заменяет Windows, Direct3D 9 и звук.
+Эмулятора x86 и Wine здесь нет.
+
+> *English:* static recompilation port of the original PC Mass Effect (2007) to Android/ARM64. x86-32 PE → C → arm64,
+> plus an HLE runtime (Win32, Direct3D 9 → GLES 3 / Vulkan, own OpenAL 1.1 → AAudio). No game data is included: you need your own
+> copy of the PC game. The launcher UI is available in RU, EN, DE, FR, IT, ES, PL, CS and HU.
+
+---
+
+## Содержание
+
+- [Как это устроено](#как-это-устроено)
+- [Для игрока](#для-игрока)
+- [Структура репозитория](#структура-репозитория)
+- [Сборка](#сборка)
+- [Тесты](#тесты)
+- [Локализация лаунчера](#локализация-лаунчера)
+- [Документация](#документация)
+- [Правовые замечания](#правовые-замечания)
+
+---
+
+## Как это устроено
+
+```
+ MassEffect.exe, msvcr80/msvcp80, d3dx9_31, PhysXCore, ogg/vorbis, binkw32   (x86-32 PE, из вашей копии игры)
+        │  tools/recomp.py  (capstone → C: целочисленная ISA, флаги, x87/SSE/MMX, таблицы переходов, SEH/C++ EH)
+        ▼
+ out/<модуль>/*.c  ──► NDK clang (arm64, -fPIC) ──► libme1game.so
+        │
+        ├── runtime/   HLE-рантайм: Win32 (файлы, потоки, синхронизация, реестр, SEH), виртуальная память,
+        │              Direct3D 9 → OpenGL ES 3 (шейдеры SM3 → GLSL) или собственный рендерер D3D9 → Vulkan,
+        │              свой программный OpenAL 1.1 (для ISACT) с выводом в AAudio, ввод, моды (VFS-оверлей), PhoneModify
+        ├── settings/  настройки движка и порта (замена MassEffectConfig.exe), утилита me1cfg
+        └── android/   лаунчер (Java), JNI, GLSL → SPIR-V (glslang), необязательно Mesa Zink и libadrenotools
+```
+
+- Игра запускается в отдельном процессе (`:game`), на весь экран. Лаунчер выбирает настройки, драйвер, моды и управление.
+- Шейдеры D3D9 компилируются перекомпилированным D3DX (HLSL), транслируются в GLSL или SPIR-V и кэшируются.
+  Поэтому первый запуск занимает несколько минут.
+- Графика: системный OpenGL ES (по умолчанию), системный Vulkan через собственный рендерер, Mesa Zink или
+  пользовательские Vulkan-драйверы (Turnip, сборки Qualcomm и Mali в формате AdrenoTools).
+
+---
+
+## Для игрока
+
+### Что нужно
+
+- Телефон или планшет на **arm64** с **Android 10** или новее, GPU с OpenGL ES 3.x (или Vulkan 1.0 для Vulkan-рендерера).
+- **Своя копия PC-версии Mass Effect (2007/2008)**. Legendary Edition не подходит: это другая игра и другой движок.
+- Место под игру во внутренней памяти или на SD-карте.
+
+Проверено на Helio G85 (Mali-G52) и Snapdragon 8 Gen 1 (Adreno 730). Работают и другие устройства с Mali и Adreno.
+Лаунчер сам определяет класс устройства (GPU/SoC, ОЗУ, частота CPU, экран) и подбирает пресет.
+
+### Установка
+
+1. Установите `me1port-launcher-v1.0.apk`. Обновление ставится поверх старых версий, настройки сохраняются.
+2. Скопируйте папку игры (с `Binaries`, `BioGame`, …) в **`/sdcard/MassEffect`**. Подойдут и папки
+   «Mass Effect», «MassEffect 1» и т. п. в корне памяти или SD-карты, в том числе на уровень глубже.
+3. Откройте лаунчер и разрешите доступ к файлам. На Android 11+ нужен «Доступ ко всем файлам».
+4. Проверьте строку «✓ Игра найдена». При первом запуске настройки подбираются автоматически.
+5. Нажмите **«Запустить игру»**.
+
+Сохранения и настройки игры лежат в `/sdcard/Documents/BioWare/Mass Effect/`, главный лог — в `Documents/me1exe_run.log`.
+
+### Возможности лаунчера
+
+- **Язык интерфейса** (кнопка 🌐 рядом с заголовком): русский, английский, немецкий, французский, итальянский,
+  испанский, польский, чешский, венгерский. Заодно можно переключить язык текста в самой игре.
+- **Пресеты** от «Минимальных» до «Максимальных», автопресет и все настройки движка (разрешение, тени, текстуры,
+  масштаб 3D-сцены, ограничение FPS, «Упрощённый расчёт» для слабых GPU).
+- **Графический драйвер**: системный GLES или Vulkan, Mesa Zink, свои драйверы из `MassEffect/GameExDriver/`.
+- **Управление**: сенсорное (стик, кнопки, камера свайпом, настраиваемая раскладка), USB/Bluetooth-клавиатура и мышь,
+  геймпад XInput (нужен мод ME1Controller).
+- **Моды**: `MassEffect/Mods/<имя>/` подключаются виртуально, оригинальные файлы не меняются. DLC подхватываются из папки игры.
+- **PhoneModify**: точечное снижение нагрузки (лимиты draw call, ключи движка, патчи) и генератор готовых профилей.
+- **Диагностика**: «Проверить» (что увидит игра), лог последнего запуска, тест без окна, «Доп. переменные» `ME1_*`.
+
+Подробно об этом рассказано в [справочнике](docs/GUIDE.md): моды, драйверы, PhoneModify, все переменные, рецепты для
+конкретных GPU, разбор лога и FAQ.
+
+---
+
+## Структура репозитория
+
+| Путь | Что там |
+|---|---|
+| `tools/recomp.py` | статический перекомпилятор x86-32 PE → C (`fpsse.py`: x87/SSE/MMX, `ehscan.py`: SEH/C++ EH, `pefile_min.py`) |
+| `tools/ilt_seeds.py`, `tools/seeds/` | точки входа из ILT-таблиц для `--seeds` |
+| `tools/difftest.py` | дифференциальный тест перекомпилятора против Unicorn (x86-хост и arm64 под qemu) |
+| `runtime/` | HLE-рантайм: `rt*.c` (ядро, FP), `hle_win32/sys/fs/thread/seh/vmem/exe.c`, `hle_d3d9.c` (+ `_gl.h`, `_vk.h`), `sm3_glsl.c`, `hle_al.c`, `hle_input.c`, `hle_mod.c`, `hle_hb.c` (профайлер), `test_*.c` |
+| `settings/` | `ini.c`, `me1settings.c` (схема настроек, пресеты, автопресет), `me1cfg_cli.c` |
+| `android/src/com/me1port/launcher/` | лаунчер: `MainActivity`, `GameActivity`, `ControlsOverlay/Settings`, `Pad`, `GameLocator`, `GpuDrivers`, `DeviceInfo`, `L` (локализация) |
+| `android/jni/` | JNI-мосты (`me1port_jni.c`, `game_jni.c`), `run_main.c` (тест без окна), `vkshim.c`, `me1spv.c` (GLSL → SPIR-V) |
+| `android/gpu/` | сборка Mesa 26.2.6 (Zink) и libadrenotools: `build_gpu.sh`, патч Mesa |
+| `android/assets/` | `loading.jpg`, `i18n/*.json` (переводы) |
+| `android/i18n/` | исходники переводов `tr/<код>.txt` и `build_tr.py` |
+| `android/test/` | хостовые JVM-тесты JNI, поиска игры и драйверов |
+| `android/build_apk.sh` | сборка APK без Gradle |
+| `tests/` | генераторы тестовых DLL (потоки, исключения), нативные тесты |
+| `docs/GUIDE.md` | справочник пользователя |
+| `PERF.md` | аудит производительности и загрузки |
+| `CHANGES_v*.md` | изменения по версиям |
+
+`out/` (сгенерированный C-код) и `build/` в репозиторий не входят: они получаются из вашей копии игры.
+
+---
+
+## Сборка
+
+### Инструменты
+
+| Что | Версия / примечание |
+|---|---|
+| Linux x86-64, `make`, `gcc` | хостовые тесты и утилиты |
+| Python 3 + `capstone` | перекомпилятор; для `difftest` ещё `unicorn` и `qemu-aarch64-static` |
+| Android NDK | r27c (`NDK=/path/android-ndk-r27c`) |
+| Android SDK | build-tools 30.0.3, platform android-29 (`ANDROID_SDK`, `ANDROID_BT`, `ANDROID_JAR`) |
+| JDK | 17 (`JAVA_HOME`) |
+| glslang | 15.0.0, собранный под Android (`GLSLANG_SRC`), для `libme1spv.so` |
+| meson ≥ 1.4, ninja, cmake, bison, flex, mako | только для `android/gpu/build_gpu.sh` (Zink и adrenotools, необязательно) |
+
+### 1. Перекомпиляция модулей игры
+
+Модули берутся из вашей установки игры (`Binaries/`). Команды повторяют комментарии в `Makefile`:
+
+```sh
+python3 tools/ilt_seeds.py  /path/MassEffect.exe tools/seeds/MassEffect_ilt_funcs.txt
+python3 tools/recomp.py /path/MassEffect.exe  out/exe       --prefix m   --seeds tools/seeds/MassEffect_ilt_funcs.txt
+python3 tools/recomp.py /path/msvcr80.dll     out/msvcr80   --prefix crt
+python3 tools/recomp.py /path/msvcp80.dll     out/msvcp80   --prefix cpp
+python3 tools/recomp.py /path/d3dx9_31.dll    out/d3dx9     --prefix dx  --code-ranges 2b005-21e0a8
+python3 tools/recomp.py /path/PhysXCore.dll   out/physxcore --prefix pxc --base 12000000
+python3 tools/recomp.py /path/ogg.dll         out/ogg       --prefix ogg --base 10100000
+python3 tools/recomp.py /path/vorbis.dll      out/vorbis    --prefix vb  --base 10200000
+python3 tools/recomp.py /path/vorbisfile.dll  out/vorbisfile --prefix vf --base 10300000
+python3 tools/recomp.py /path/binkw32.dll     out/bink      --prefix bk  --base 10400000
+```
+
+### 2. Нативные библиотеки
+
+```sh
+make game-lib                         # build/android/libme1game.so + libme1run.so
+make build/android/libme1spv.so       # GLSL → SPIR-V для Vulkan-рендерера
+sh android/gpu/build_gpu.sh           # необязательно: Mesa Zink + libadrenotools → build/android/gpu
+```
+
+### 3. APK
+
+```sh
+make apk                              # или: sh android/build_apk.sh
+# → android/out/me1port-launcher.apk
+```
+
+`build_apk.sh` собирает `libme1port.so` и `libme1vkshim.so`, затем добавляет `libme1game.so`/`libme1run.so`,
+`libme1spv.so`, GPU-библиотеки, `d3dx9_31.dll` (`D3DX_DLL=…`) и `assets/`. Дальше идут javac → d8 → aapt2 →
+zipalign → apksigner. Переменные: `NO_EXE=1` (без игры), `NO_GPU=1` (без Zink/adrenotools), `NO_D3DX=1`, `KEYSTORE=…`.
+
+APK подписывается ключом `android/keystore/me1port-debug.keystore` (пароль `android`, alias `me1port`). Так новые
+версии ставятся поверх старых. Ключ публичный и подходит только для отладочных сборок. Для своих релизов используйте свой ключ.
+
+Если менялись только Java-код или переводы, NDK не нужен. Скомпилируйте Java, возьмите `lib/` и `assets/d3dx9_31.dll`
+из предыдущего APK и выполните шаги 2–6 из `build_apk.sh`.
+
+---
+
+## Тесты
+
+```sh
+make difftest              # перекомпилятор против Unicorn на x86-хосте
+make difftest-arm64        # то же для arm64 под qemu-aarch64-static
+make test-mt test-eh       # потоки/синхронизация и SEH/C++-исключения на тестовых DLL
+make test-vorbis test-bink # перекомпилированные декодеры звука и видео
+make build/test_d3d9 build/test_fs build/test_mod build/test_al   # HLE D3D9, файловый слой, моды, звук
+```
+
+`android/test/*.java` — хостовые JVM-тесты моста JNI (`HostTest`), поиска игры (`LocatorTest`) и пакетов драйверов
+(`DriversTest`) на x86-64-сборке `libme1port.so`.
+
+На устройстве есть «Тест без окна» в лаунчере: тот же `MassEffect.exe` без окна, кадры сохраняются в `Documents/me1_frames`.
+
+---
+
+## Локализация лаунчера
+
+- Исходные строки в Java — на русском, они же служат ключами: `L.t("…")`. Куски нативных сообщений переводит `L.tx()`,
+  схему настроек — `L.schema()`.
+- Переводы лежат в `android/assets/i18n/<код>.json`, их исходники — в `android/i18n/tr/<код>.txt` в формате `ID|текст`
+  (`J` — строки Java, `S` — схема настроек, `F` — нативные фрагменты, `X` — выбор языка). Пробелы и переводы строк
+  по краям берутся из ключа автоматически, `\n` означает перевод строки.
+- После правки выполните `python3 android/i18n/build_tr.py en de fr it es pl cs hu`. Скрипт проверит, что все строки на месте и
+  совпадают спецификаторы `%s`/`%.1f`.
+- Если строки нет в переводе, показывается английский вариант, а если нет и его — русский оригинал. Описания
+  «Доп. переменных» и комментарии в `phone_tune.txt` переведены только на английский.
+
+---
+
+## Документация
+
+- [docs/GUIDE.md](docs/GUIDE.md): справочник (моды, драйверы GPU, PhoneModify, настройки, переменные `ME1_*`, рецепты, лог, FAQ).
+- [PERF.md](PERF.md): аудит производительности и загрузки с замерами.
+- [CHANGES_v1.0.md](CHANGES_v1.0.md), [CHANGES_v0.10.13.md](CHANGES_v0.10.13.md): изменения.
+
+---
+
+## Правовые замечания
+
+- Mass Effect — товарный знак Electronic Arts / BioWare. Проект с ними не связан.
+- В репозитории **нет файлов игры** и нет сгенерированного из них кода (`out/`). Для сборки и игры нужна своя
+  легально купленная копия PC-версии. Не публикуйте `out/`, `build/` и APK с `libme1game.so`: они содержат код,
+  полученный из бинарников игры.
+- `d3dx9_31.dll` (DirectX) берётся из вашей установки и кладётся в APK как ресурс.
+- Сторонние компоненты: capstone (BSD), glslang (BSD/Apache-2.0), Mesa (MIT), libadrenotools (BSD-2-Clause). Их лицензии действуют
+  на соответствующие части.
