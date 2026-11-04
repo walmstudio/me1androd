@@ -1,0 +1,267 @@
+/* Базовые настройки */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+@font-face {
+    font-family: "Korataki";
+    src: url("../fonts/Korataki.otf") format("opentype");
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Korataki_des";
+    src: url("../fonts/Korataki_des.otf") format("opentype");
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+}
+
+html, body {
+    width: 100%;
+    min-height: 100%;
+    font-family: Arial, sans-serif;
+    background: #000;
+    color: #fff;
+}
+
+/* Фоновое видео */
+.background-video {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    filter: blur(2px);
+    transform: scale(1.02);
+    z-index: 0;
+    pointer-events: none;
+}
+
+/* Затемнение поверх видео */
+.background-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.25);
+    z-index: 1;
+    pointer-events: none;
+}
+
+/* Основной контейнер */
+.site-content {
+    position: relative;
+    z-index: 2;
+    min-height: 100vh;
+}
+
+/* Шапка */
+header {
+    width: 100%;
+    padding: 25px 50px;
+}
+
+/* Основная область */
+main {
+    min-height: calc(100vh - 100px);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* Подвал */
+footer {
+    padding: 25px 50px;
+}
+
+/* Центральный фрейм */
+.hero-frame {
+    width: min(90%, 700px);
+    padding: 60px 40px;
+    text-align: center;
+
+    background: rgba(10, 15, 25, 0.45);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 16px;
+
+    box-shadow: 0 15px 50px rgba(0, 0, 0, 0.3);
+}
+
+/* Заголовок */
+.hero-frame h1 {
+    font-family: "Korataki", Arial, sans-serif;
+    font-size: clamp(21px, 5vw, 35px);
+    font-weight: normal;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    text-shadow: 0 2px 15px rgba(0, 0, 0, 0.6);
+}
+
+.hero-frame p {
+    font-family: "Korataki_des", Arial, sans-serif;
+    font-size: 20px;
+    line-height: 1.7;
+    margin-top: 20px;
+}
+
+/* Переключатель языков */
+.language-switcher {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 30px;
+}
+
+.language-switcher button {
+    width: 42px;
+    height: 42px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 25px;
+    cursor: pointer;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 50%;
+    transition: all 0.25s ease;
+}
+
+.language-switcher button:hover {
+    transform: scale(1.15);
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.language-switcher button.active {
+    border: 2px solid #36baff;
+    background: rgba(54, 186, 255, 0.2);
+    box-shadow: 0 0 12px rgba(54, 186, 255, 0.4);
+}
+
+/* Адаптация под мобильные устройства */
+@media (max-width: 768px) {
+    header {
+        padding: 20px;
+    }
+
+    footer {
+        padding: 20px;
+    }
+
+    .hero-frame {
+        padding: 40px 20px;
+    }
+}
+
+/* Ряд основных кнопок */
+.action-buttons {
+    display: flex;
+    justify-content: center;
+    align-items: stretch;
+    gap: 12px;
+    margin-top: 35px;
+}
+
+.action-button {
+    flex: 1;
+    padding: 15px 12px;
+
+    display: flex;
+    justify-content: center;
+    align-items: center;
+
+    color: #fff;
+    text-decoration: none;
+    font-family: "Korataki", Arial, sans-serif;
+    font-size: 14px;
+
+    background: rgba(30, 150, 220, 0.15);
+    border: 1px solid rgba(54, 186, 255, 0.5);
+    border-radius: 8px;
+
+    transition: all 0.25s ease;
+}
+
+.action-button:hover {
+    background: rgba(54, 186, 255, 0.3);
+    border-color: #36baff;
+    box-shadow: 0 0 15px rgba(54, 186, 255, 0.3);
+    transform: translateY(-3px);
+}
+
+/* Фрейм WALM */
+.walm-frame {
+    width: 100%;
+    height: 65px;
+    margin-top: 20px;
+    padding: 0;
+
+    background: #000;
+    border: none;
+    border-radius: 9px;
+    overflow: hidden;
+}
+
+.walm-button {
+    width: 100%;
+    height: 100%;
+
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+
+    background: #000;
+    color: #fff;
+
+    font-family: "Korataki", Arial, sans-serif;
+    font-size: 20px;
+    letter-spacing: 3px;
+
+    text-decoration: none;
+    border: none;
+    border-radius: 9px;
+
+    transition: all 0.25s ease;
+}
+
+.walm-button img {
+    width: 120px;
+    height: 120px;
+    object-fit: contain;
+}
+
+.walm-button:hover {
+
+    color: #36baff;
+    text-shadow: 0 0 12px rgba(54, 186, 255, 0.7);
+}
+
+.walm-button:hover img {
+    transform: scale(1.1);
+    transition: transform 0.25s ease;
+}
+
+/* Мобильная адаптация */
+@media (max-width: 600px) {
+    .action-buttons {
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .action-button {
+        width: 100%;
+        min-height: 48px;
+    }
+
+    .hero-frame {
+        padding: 35px 20px;
+    }
+}
