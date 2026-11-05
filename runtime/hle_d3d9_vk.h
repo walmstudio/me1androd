@@ -48,7 +48,7 @@
     X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdSetStencilReference) X(vkCmdBindDescriptorSets) \
     X(vkCmdBindIndexBuffer) X(vkCmdBindVertexBuffers) X(vkCmdDraw) X(vkCmdDrawIndexed) X(vkCmdCopyImage) X(vkCmdBlitImage) \
     X(vkCmdCopyBufferToImage) X(vkCmdCopyImageToBuffer) X(vkCmdClearColorImage) X(vkCmdClearDepthStencilImage) X(vkCmdClearAttachments) X(vkCmdPipelineBarrier) \
-    X(vkCmdBeginRenderPass) X(vkCmdEndRenderPass) X(vkCmdResetQueryPool) X(vkCmdWriteTimestamp) X(vkCreateQueryPool) \
+    X(vkCmdBeginRenderPass) X(vkCmdEndRenderPass) X(vkCmdResetQueryPool) X(vkCmdWriteTimestamp) X(vkCreateQueryPool) X(vkCmdBeginQuery) X(vkCmdEndQuery) \
     X(vkDestroyQueryPool) X(vkGetQueryPoolResults)
 #define VKDO(X) X(vkCreateSwapchainKHR) X(vkDestroySwapchainKHR) X(vkGetSwapchainImagesKHR) X(vkAcquireNextImageKHR) X(vkQueuePresentKHR)
 #define VK_DECL(n) static PFN_##n n;
@@ -56,16 +56,24 @@ static PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
 VKG(VK_DECL) VKI(VK_DECL) VKIO(VK_DECL) VKD(VK_DECL) VKDO(VK_DECL)
 static PFN_vkEnumerateInstanceVersion vkEnumerateInstanceVersion;
 
+/* v1.1 (Linux port): X11 / Wayland surfaces (me1_platform.h), declared here so no window-system headers are needed */
+#ifndef __ANDROID__
+typedef struct { VkStructureType sType; const void* pNext; VkFlags flags; void* dpy; unsigned long window; } Me1VkXlibSurfaceCI;
+typedef struct { VkStructureType sType; const void* pNext; VkFlags flags; void* display; void* surface; } Me1VkWaylandSurfaceCI;
+typedef VkResult (*Me1PFN_CreateWsSurface)(VkInstance, const void*, const VkAllocationCallbacks*, VkSurfaceKHR*);
+static Me1PFN_CreateWsSurface vkCreateWsSurface;   /* vkCreateXlibSurfaceKHR or vkCreateWaylandSurfaceKHR */
+#endif
 static int g_vklost;
 static VkInstance VI; static VkPhysicalDevice VP; static VkDevice VD; static VkQueue VQ; static uint32_t VQF;
 static VkPhysicalDeviceProperties VPP; static VkPhysicalDeviceMemoryProperties VMP; static VkPhysicalDeviceFeatures VFH, VFE;
 static VkDebugUtilsMessengerEXT g_vkdbg;
 static struct {
-    int bc, aniso, indep, ts, swapext, headless, android, strict, validate, bgravtx, ndebug;
+    int bc, aniso, indep, ts, swapext, headless, android, ws, strict, validate, bgravtx, ndebug;
     float maxaniso, tsperiod; uint32_t maxtex; VkFormat ds; int dsstencil;
     VkDeviceSize uboalign; char name[256]; uint32_t api;
     uint32_t split;        /* v0.10.3: submit the frame in chunks of N draws (ME1_VK_SPLIT, Mali default 384, 0 = one submit) */
     uint64_t splitprims;   /* v0.10.12 (P0-4): and/or N primitives (ME1_VK_SPLITPRIMS, Mali default 150000, 0 = off) */
+    int oprec;             /* v1.1.3: occlusionQueryPrecise (sample counts; else only zero / non-zero) */
 } VX;
 static int g_pipeidle;   /* v0.10.4: ME1_VK_PIPEIDLE=1 - device idle before new shader modules/pipelines (Mali DEVICE_LOST) */
 static int (*p_spv_compile)(int, const char*, unsigned**, size_t*, char*, size_t); static void (*p_spv_free)(unsigned*);
@@ -289,8 +297,16 @@ typedef struct {
     VkQueryPool qp; int qon;
     VkSemaphore acq;
     VkBuffer rb; VMem rbm; VkDeviceSize rbsize; int rbw, rbh, rbpend;   /* CPU presentation: this frame's pixels */
+    /* v1.1.3: occlusion queries of this slot: pools of VQP, created on demand; on = used, reset at the next slot_begin;
+     * ost: 0 recording, 1 submitted, 2 results read (g_ores), 3 never ran (submit failed); rser = serial of this use */
+    VkQueryPool op[16]; uint32_t nop, on; int ost; uint64_t rser;
 } VSlot;
 static VSlot S[NSLOT]; static int g_si;
+#define VQP 4096u
+#define VQPOOLS 16u
+static uint32_t g_ores[NSLOT][VQP * VQPOOLS];   /* results of the finished slot (UINT32_MAX: not available) */
+static int g_vq_act; static VkQueryPool g_vq_pool; static uint32_t g_vq_idx;   /* the Vulkan query recording now */
+static uint32_t g_vq_flush;   /* mid-frame submissions for queries polled in the frame being recorded (per frame) */
 #define CS (&S[g_si])
 static VkDescriptorSetLayout g_dsl[2]; static VkPipelineLayout g_pl; static VkDescriptorPool g_upool[16]; static int g_nupool;
 #define VSR 4416u    /* vertex shader block: dx_fix, dx_vp, dx_bgra/vb, vi[16], vc[256] */
@@ -374,6 +390,10 @@ static void slot_begin(void) {
     dead_reap();
     VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL };
     vkBeginCommandBuffer(s->cmd, &bi); s->upon = 0;
+    for (uint32_t k = 0; k < s->nop && k * VQP < s->on; k++) {   /* v1.1.3: the occlusion queries used last time (results read) */
+        uint32_t m = s->on - k * VQP; vkCmdResetQueryPool(s->cmd, s->op[k], 0, m < VQP ? m : VQP);
+    }
+    s->on = 0; s->ost = 0; s->rser = g_vserial;
     if (VX.ts) { vkCmdResetQueryPool(s->cmd, s->qp, 0, 2); vkCmdWriteTimestamp(s->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, s->qp, 0); s->qon = 1; }
     vb_cmd_defaults(s->cmd);
 }
@@ -782,7 +802,10 @@ static void rp_begin(void) {
 }
 static void rp_end(void) {
     if (!RP.open && RP.clr && RP.tf) rp_begin();   /* a pending clear still has to happen */
-    if (RP.open) { vkCmdEndRenderPass(CS->cmd); RP.open = 0; }
+    if (RP.open) {
+        if (g_vq_act) { vkCmdEndQuery(CS->cmd, g_vq_pool, g_vq_idx); g_vq_act = 0; }   /* v1.1.3: a query lives inside one render pass */
+        vkCmdEndRenderPass(CS->cmd); RP.open = 0;
+    }
 }
 /* the device's render targets; 0: nothing to draw into, else 1 | 2 (depth attached) | 4 (stencil bits) */
 static int rp_targets(Dev* d) {
@@ -1087,6 +1110,7 @@ static uint64_t g_tsmask = ~0ull;
 static struct {
     void* win; VkSurfaceKHR surf; VkSwapchainKHR sc; VkImage img[16]; VkSemaphore rs[16]; uint32_t n; VkFormat fmt; VkExtent2D ext;
     int fake, cpu, recreate, lost, failed, gen, ww, wh, gw, gh; VkExtent2D cur;
+    int mgen;   /* v1.1: Me1Window.gen the swap chain was made for */
 } VW = { .gen = -1 };
 static void vcpu_post(VSlot* s);
 /* VK_SUBOPTIMAL_KHR: Android 10+ returns it on every acquire/present while preTransform (identity: the compositor rotates)
@@ -1124,6 +1148,16 @@ static void slot_finish(VSlot* s) {
         s->qon = 0;
     }
     if (s->rbpend) { vcpu_post(s); s->rbpend = 0; }
+    if (s->on) {   /* v1.1.3: occlusion results of this slot, kept until it is recorded again */
+        uint32_t* r = g_ores[s - S];
+        for (uint32_t k = 0; k < s->nop && k * VQP < s->on; k++) {
+            uint32_t m = s->on - k * VQP; if (m > VQP) m = VQP;
+            memset(r + k * VQP, 0xFF, m * 4);
+            VkResult e = vkGetQueryPoolResults(VD, s->op[k], 0, m, m * 4, r + k * VQP, 4, 0);
+            if (e != VK_SUCCESS && e != VK_NOT_READY) memset(r + k * VQP, 0xFF, m * 4);
+        }
+    }
+    s->ost = 2;
 }
 static VkDeviceSize ring_used(const Ring* r) { VkDeviceSize n = 0; for (int i = 0; i < r->n && i <= r->cur; i++) n += r->c[i].off; return n; }
 /* end the command buffers of this slot, submit them (idx >= 0: after acquiring swap chain image idx, then present it), start the next slot */
@@ -1144,6 +1178,7 @@ static void vb_submit(int32_t idx, int wait, int eof) {
     VkResult r = g_vklost ? VK_ERROR_DEVICE_LOST : vkQueueSubmit(VQ, 1, &si, s->fence);
     s->serial = g_vserial; s->eof = eof; VT.subs++;
     s->pending = g_vklost ? 0 : vok(r, "vkQueueSubmit");
+    s->ost = s->pending ? 1 : 3;
     if (!s->pending) {   /* nothing of it runs: its resources are free, the acquire semaphore may stay signaled */
         if (!g_vklost) vkDeviceWaitIdle(VD);
         if (s->serial > g_vdone) g_vdone = s->serial;
@@ -1328,6 +1363,72 @@ static void consts_fill(float (*dst)[4], const Sm3* s, const float (*src)[4]) {
     memcpy(dst, src, (size_t)s->nconst * 16);
     if (s->crel && s->ndef) for (int k = 0; k < s->ndef; k++) if (s->def[k].reg < s->nconst) memcpy(dst[s->def[k].reg], s->def[k].v, 16);
 }
+/* ---- v1.1.3: occlusion queries ----
+ * A D3D query becomes one or more Vulkan queries of the frame slot (one per render pass it spans), begun lazily right
+ * before its first draw inside the render pass and ended with the pass or at Issue(END); the results are read when the
+ * slot's fence has signaled (slot_finish) and summed. GetData polls the fence; a query of the frame being recorded that
+ * is polled again gets that frame submitted early (D3DGETDATA_FLUSH), at most 8 times a frame. */
+static int vq_pool_new(VSlot* s) {
+    if (s->nop >= VQPOOLS) return 0;
+    VkQueryPoolCreateInfo qi = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_OCCLUSION, VQP, 0 };
+    VkQueryPool p; if (vkCreateQueryPool(VD, &qi, NULL, &p) != VK_SUCCESS) return 0;
+    vkCmdResetQueryPool(up_begin(), p, 0, VQP);   /* the upload buffer runs before this chunk; render passes forbid resets */
+    s->op[s->nop++] = p; return 1;
+}
+static void vq_draw(void) {
+    QRes* q = g_qopen->gx; VSlot* s = CS;
+    q->rec++;
+    if (!q->rtw) { q->rtw = RP.w; q->rth = RP.h; }
+    if (g_vq_act || q->over || !RP.open) return;
+    if (q->ser != s->rser) { if (q->n) { q->over = 1; return; } q->slot = (uint32_t)g_si; q->ser = s->rser; }   /* frame submitted since BEGIN */
+    if (q->n >= 8) { q->over = 1; return; }
+    uint32_t i = s->on, k = i / VQP;
+    if (k >= s->nop && !vq_pool_new(s)) {
+        static int w; if (!w++) vlog("occlusion queries: more than %u in one frame - the rest report \"visible\"\n", VQP * VQPOOLS);
+        q->over = 1; return;
+    }
+    vkCmdBeginQuery(s->cmd, s->op[k], i % VQP, VX.oprec ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
+    g_vq_act = 1; g_vq_pool = s->op[k]; g_vq_idx = i % VQP;
+    q->sub[q->n++] = i; s->on++;
+}
+static void vq_begin(Obj* o) { QRes* q = o->gx; q->slot = (uint32_t)g_si; q->ser = CS->rser; }
+static void vq_end(Obj* o) {
+    (void)o;
+    if (g_vq_act && RP.open) { vkCmdEndQuery(CS->cmd, g_vq_pool, g_vq_idx); g_vq_act = 0; }
+}
+static int vq_sum(const QRes* q, const VSlot* s, uint64_t* out) {
+    const uint32_t* r = g_ores[s - S]; uint64_t v = 0;
+    for (int i = 0; i < q->n; i++) { if (r[q->sub[i]] == UINT32_MAX) return 0; v += r[q->sub[i]]; }
+    *out = v; return 1;
+}
+static int vq_data(Obj* o, uint32_t flags, uint32_t* out) {
+    QRes* q = o->gx; (void)flags;
+    if (g_vklost || q->slot >= NSLOT) { q_done(q, q_visible(q), 0); *out = q->res; return 1; }
+    VSlot* s = &S[q->slot];
+    if (s->rser != q->ser || s->ost == 3) { q_done(q, q_visible(q), 0); *out = q->res; return 1; }   /* slot reused / never ran */
+    int poll = q->polls++;
+    if (s->ost == 0) {   /* still in the frame being recorded */
+        if (!poll || g_occl == 2) return 0;
+        if (g_vq_flush >= 8) { q_done(q, q_visible(q), 0); *out = q->res; return 1; }
+        g_vq_flush++; g_qs.flushes++;
+        vb_submit(-1, 0, 0);
+    }
+    if (s->ost == 1 && s->pending) {
+        double t = mono();
+        VkResult r = poll ? vkWaitForFences(VD, 1, &s->fence, VK_TRUE, 2000000ull) : vkGetFenceStatus(VD, s->fence);
+        if (poll) { g_qs.waits++; g_qs.wait_s += mono() - t; }
+        if (r == VK_SUCCESS) slot_finish(s);
+    }
+    if (s->ost == 2) {
+        uint64_t v;
+        if (!vq_sum(q, s, &v)) q_done(q, q_visible(q), 0);
+        else q_done(q, !v ? 0 : !VX.oprec ? q_area(q) : v > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)v, 1);   /* imprecise: visible or not */
+        *out = q->res; return 1;
+    }
+    if (!q->t0) q->t0 = mono();
+    else if (mono() - q->t0 > 0.25) { q_done(q, q_visible(q), 0); *out = q->res; return 1; }   /* the engine would time out at 0.5 s */
+    return 0;
+}
 static void vb_draw(Dev* d, DrawCall* dc) {
     if (g_vklost) return;
     dc->count = prim_verts(dc->pt, dc->prims);
@@ -1473,6 +1574,7 @@ static void vb_draw(Dev* d, DrawCall* dc) {
         if (VB.swmask != wm) { vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, wm); VB.swmask = wm; }
     }
     uint32_t ni = dc->ninst > 1 ? dc->ninst : 1;
+    if (g_qopen) vq_draw();   /* v1.1.3: inside an occlusion query */
     if (!dc->indexed) vkCmdDraw(cb, dc->count, ni, first, 0);
     else vkCmdDrawIndexed(cb, dc->count, ni, first, L.voff, 0);
     GP_MARK(GP_DRAW);
@@ -1686,6 +1788,7 @@ static void vswap_drop(int surf) {
     if (surf && VW.surf) { vkDestroySurfaceKHR(VI, VW.surf, NULL); VW.surf = VK_NULL_HANDLE; }
 }
 static void vk_driver_hopeless(void);
+static int g_ws_mis; static double g_ws_mist;   /* v1.1: swap chain size != window size (X11 resize not applied yet): retries */
 static int vsurf_make(void) {
     if (VW.surf) return 1;
 #ifdef __ANDROID__
@@ -1698,6 +1801,19 @@ static int vsurf_make(void) {
             return 0;
         }
         return vok(r, "vkCreateAndroidSurfaceKHR");
+    }
+#else
+    if (VW.win && !VW.fake && VX.ws && vkCreateWsSurface) {   /* v1.1: desktop window */
+        Me1Window* w = (Me1Window*)VW.win; VkResult r;
+        if (w->kind == ME1_WS_WAYLAND) {
+            Me1VkWaylandSurfaceCI ci = { (VkStructureType)1000006000 /* WAYLAND_SURFACE_CREATE_INFO_KHR */, NULL, 0, w->display, w->surface };
+            r = vkCreateWsSurface(VI, &ci, NULL, &VW.surf);
+        } else {
+            Me1VkXlibSurfaceCI ci = { (VkStructureType)1000004000 /* XLIB_SURFACE_CREATE_INFO_KHR */, NULL, 0, w->display, w->xwindow };
+            r = vkCreateWsSurface(VI, &ci, NULL, &VW.surf);
+        }
+        VW.mgen = w->gen;
+        return vok(r, w->kind == ME1_WS_WAYLAND ? "vkCreateWaylandSurfaceKHR" : "vkCreateXlibSurfaceKHR");
     }
 #endif
     if (VW.fake && vkCreateHeadlessSurfaceEXT) {
@@ -1723,7 +1839,21 @@ static int vswap_make(void) {
     if (pick < 0) { vlog("swap chain: no format usable as a blit destination (%u formats)\n", nf); return 0; }
     if (!(c.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) { vlog("swap chain: images cannot be transfer destinations (usage 0x%x)\n", c.supportedUsageFlags); return 0; }
     VkExtent2D ext = c.currentExtent;
-    if (ext.width == 0xFFFFFFFFu) { ext.width = (uint32_t)(g_fakew > 0 ? g_fakew : 1280); ext.height = (uint32_t)(g_fakeh > 0 ? g_fakeh : 720); }
+    if (ext.width == 0xFFFFFFFFu) {   /* the surface takes the swap chain's size (Wayland, headless) */
+        ext.width = (uint32_t)(g_fakew > 0 ? g_fakew : 1280); ext.height = (uint32_t)(g_fakeh > 0 ? g_fakeh : 720);
+#ifndef __ANDROID__
+        if (VW.win && !VW.fake && ((Me1Window*)VW.win)->w > 0) { ext.width = (uint32_t)((Me1Window*)VW.win)->w; ext.height = (uint32_t)((Me1Window*)VW.win)->h; }
+#endif
+    }
+#ifndef __ANDROID__
+    if (VW.win && !VW.fake) {
+        Me1Window* mw = (Me1Window*)VW.win;
+        VW.mgen = mw->gen;
+        /* X11: the server may not have applied the new size yet (fullscreen toggle): retry a few times, 0.1 s apart */
+        int mis = c.currentExtent.width != 0xFFFFFFFFu && mw->w > 0 && (c.currentExtent.width != (uint32_t)mw->w || c.currentExtent.height != (uint32_t)mw->h);
+        g_ws_mis = mis ? g_ws_mis + 1 : 0; g_ws_mist = mono();
+    }
+#endif
     if (ext.width < c.minImageExtent.width) ext.width = c.minImageExtent.width;
     if (ext.height < c.minImageExtent.height) ext.height = c.minImageExtent.height;
     if (c.maxImageExtent.width && ext.width > c.maxImageExtent.width) ext.width = c.maxImageExtent.width;
@@ -1793,6 +1923,10 @@ static void vb_set_window(void* anw) {
 static int vswap_acquire(uint32_t* idx) {
     for (int tries = 0; tries < 3; tries++) {
         if (VW.lost || VW.failed) return 0;
+#ifndef __ANDROID__
+        if (VW.sc && VW.win && !VW.fake && (((Me1Window*)VW.win)->gen != VW.mgen ||
+            (g_ws_mis && g_ws_mis < 10 && mono() - g_ws_mist > 0.1))) VW.recreate = 1;   /* v1.1: the front end resized the window */
+#endif
         if ((!VW.sc || VW.recreate) && !vswap_make()) { if (!vswap_fail()) return 0; return 0; }
         double t = mono();
         VkResult r = subopt_test(vkAcquireNextImageKHR(VD, VW.sc, 1000000000ull, CS->acq, VK_NULL_HANDLE, idx));
@@ -1925,7 +2059,7 @@ static int vk_device_reset(void) {
         return 0; }
     g_recover_frame = g_st.frames;
     GS.texmem = 0;   /* (P0-8/P2-2) after the gl_free sweep it must be ~0; a non-zero value is an accounting leak */
-    vlog("recovery complete - rendering continues (frame %llu, skipped draws now %u)\n", (unsigned long long)g_st.frames, GS.skipped);
+    vlog("recovery complete - rendering continues (frame %llu, skipped draws now %llu)\n", (unsigned long long)g_st.frames, (unsigned long long)GS.skipped);
     return 1;
 }
 
@@ -1938,7 +2072,7 @@ static void vb_present(Obj* bb) {
     vwin_apply();
     Att a; if (!att_of(bb, &a) || a.r->kind != 1) return;
     uint32_t w, h; att_size(&a, &w, &h);
-    g_pframes++;
+    g_pframes++; g_vq_flush = 0;
     if (g_fdump && (g_pframes == 1 || g_pframes % (uint64_t)g_dumpevery == 0)) vdump(&a, w, h);
     if (g_vklost && g_lostreset_ok) {   /* v0.10.7 flow, v0.10.11: only with ME1_VK_LOSTRESET=1 (rollback default: off) */
         if (g_d3dlost && mono() - g_d3dlostt < 5.0) return;
@@ -2131,7 +2265,12 @@ static int vb_init(void) {
     if (VX.android) { ien[nien++] = VK_KHR_SURFACE_EXTENSION_NAME; ien[nien++] = "VK_KHR_android_surface"; }
 #else
     VX.headless = surf && vx_has(ix, nix, VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME);
-    if (VX.headless) { ien[nien++] = VK_KHR_SURFACE_EXTENSION_NAME; ien[nien++] = VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME; }
+    { const char* wse = g_ws_kind == ME1_WS_X11 ? "VK_KHR_xlib_surface" : g_ws_kind == ME1_WS_WAYLAND ? "VK_KHR_wayland_surface" : NULL;
+      VX.ws = surf && wse && vx_has(ix, nix, wse);   /* v1.1: desktop window */
+      if (wse && !VX.ws) vlog("instance without %s: no window output\n", wse);
+      if (VX.ws || VX.headless) ien[nien++] = VK_KHR_SURFACE_EXTENSION_NAME;
+      if (VX.ws) ien[nien++] = wse;
+      if (VX.headless) ien[nien++] = VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME; }
 #endif
     if (VX.validate) {
         VkLayerProperties lp[64]; uint32_t nlp = 64; if (vkEnumerateInstanceLayerProperties(&nlp, lp) < 0) nlp = 0;
@@ -2149,6 +2288,9 @@ static int vb_init(void) {
 #define VK_LI(n) n = (PFN_##n)vkGetInstanceProcAddr(VI, #n); if (!n) { vlog("%s missing\n", #n); vb_teardown(); return 0; }
 #define VK_LIO(n) n = (PFN_##n)vkGetInstanceProcAddr(VI, #n);
     VKI(VK_LI) VKIO(VK_LIO)
+#ifndef __ANDROID__
+    if (VX.ws) vkCreateWsSurface = (Me1PFN_CreateWsSurface)vkGetInstanceProcAddr(VI, g_ws_kind == ME1_WS_X11 ? "vkCreateXlibSurfaceKHR" : "vkCreateWaylandSurfaceKHR");
+#endif
     if (VX.validate && vkCreateDebugUtilsMessengerEXT) {
         VkDebugUtilsMessengerCreateInfoEXT di; memset(&di, 0, sizeof di);
         di.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
@@ -2157,7 +2299,7 @@ static int vb_init(void) {
         di.pfnUserCallback = vk_dbg_cb;
         vkCreateDebugUtilsMessengerEXT(VI, &di, NULL, &g_vkdbg);
     }
-    /* physical device: ME1_VK_DEVICE=n, else the first GPU with a graphics queue (discrete/integrated before CPU) */
+    /* physical device: ME1_VK_DEVICE=n, else the first GPU with a graphics queue: discrete, then integrated/other, then CPU */
     VkPhysicalDevice pds[8]; uint32_t npd = 8;
     if (vkEnumeratePhysicalDevices(VI, &npd, pds) < 0) npd = 0;
     if (!npd) { vlog("no Vulkan device\n"); vb_teardown(); return 0; }
@@ -2166,8 +2308,8 @@ static int vb_init(void) {
         VkPhysicalDeviceProperties pp; vkGetPhysicalDeviceProperties(pds[i], &pp);
         VkQueueFamilyProperties qf[16]; uint32_t nq = 16; vkGetPhysicalDeviceQueueFamilyProperties(pds[i], &nq, qf);
         int q = -1; for (uint32_t k = 0; k < nq && q < 0; k++) if (qf[k].queueFlags & VK_QUEUE_GRAPHICS_BIT) q = (int)k;
-        int score = q < 0 ? -1 : pp.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU ? 1 : 2;
-        if (want >= 0) score = (int)i == want && q >= 0 ? 3 : -1;
+        int score = q < 0 ? -1 : pp.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU ? 1 : pp.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3 : 2;   /* v1.1: discrete first (laptops) */
+        if (want >= 0) score = (int)i == want && q >= 0 ? 4 : -1;
         if (score > bscore) { bscore = score; best = (int)i; bq = (uint32_t)(q < 0 ? 0 : q); }
     }
     if (best < 0 || bscore < 0) { vlog("no Vulkan device with a graphics queue\n"); vb_teardown(); return 0; }
@@ -2182,13 +2324,14 @@ static int vb_init(void) {
     static VkExtensionProperties dx[512]; uint32_t ndx = 512;
     if (vkEnumerateDeviceExtensionProperties(VP, NULL, &ndx, dx) < 0) ndx = 0;
     const char* den[4]; uint32_t nden = 0;
-    VX.swapext = (VX.android || VX.headless) && vx_has(dx, ndx, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    VX.swapext = (VX.android || VX.headless || VX.ws) && vx_has(dx, ndx, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     if (VX.swapext) den[nden++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     memset(&VFE, 0, sizeof VFE);
     VFE.samplerAnisotropy = VFH.samplerAnisotropy;
     VFE.textureCompressionBC = VFH.textureCompressionBC && !VX.strict && !getenv("ME1_VK_NOBC");
     VFE.independentBlend = VFH.independentBlend;
     VFE.fullDrawIndexUint32 = VFH.fullDrawIndexUint32;
+    VFE.occlusionQueryPrecise = VFH.occlusionQueryPrecise;   /* v1.1.3: D3D9 occlusion queries count samples */
     float prio = 1.f;
     VkDeviceQueueCreateInfo qci = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, NULL, 0, VQF, 1, &prio };
     VkDeviceCreateInfo dci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, NULL, 0, 1, &qci, 0, NULL, nden, den, &VFE };
@@ -2198,6 +2341,7 @@ static int vb_init(void) {
     VKD(VK_LD)
     if (VX.swapext) { VKDO(VK_LDO) if (!vkCreateSwapchainKHR || !vkAcquireNextImageKHR || !vkQueuePresentKHR || !vkGetSwapchainImagesKHR) VX.swapext = 0; }
     vkGetDeviceQueue(VD, VQF, 0, &VQ);
+    VX.oprec = VFE.occlusionQueryPrecise; g_vq_act = 0;
     VX.bc = VFE.textureCompressionBC; VX.aniso = VFE.samplerAnisotropy; VX.maxaniso = VPP.limits.maxSamplerAnisotropy; VX.indep = VFE.independentBlend;
     VX.maxtex = VPP.limits.maxImageDimension2D; VX.tsperiod = VPP.limits.timestampPeriod;
     VX.uboalign = VPP.limits.minUniformBufferOffsetAlignment < 16 ? 16 : VPP.limits.minUniformBufferOffsetAlignment;
@@ -2293,6 +2437,7 @@ static int vb_init(void) {
          g_vpcpath[0] ? g_vpcpath : "off", pcn, VX.validate ? ", validation on" : "");
     vlog("D3D9 float emulation %d (ME1_FLOAT_EMU), invariant position %d (ME1_INVARIANT), simplified calculation %d (ME1_SHADER_LITE: engine lighting/effects switches, FP16 for _pp values, cheap sRGB, anisotropy <= 2x, mm timer 5 ms, audio 32 kHz), submits split every %u draws (ME1_VK_SPLIT)\n",
          sm3_float_emu, sm3_invariant, sm3_lite, VX.split);
+    vlog("occlusion queries: %s (ME1_OCCLUSION=%d)\n", !g_occl ? "off - always visible" : VX.oprec ? "precise sample counts" : "visible / hidden only (no occlusionQueryPrecise)", g_occl);
     return 1;
 }
 
@@ -2315,7 +2460,16 @@ static int vb_init(void) {
 #undef gl_report
 #undef me1gl_set_window
 #undef me1gl_frame_times
-static void gl_free(Obj* o) { if (g_vk) vb_free(o); else gles_free(o); }
+static void q_free(Obj* o) {   /* v1.1.3: occlusion query object (QRes) */
+    QRes* q = o->gx;
+    if (g_qopen == o) { if (g_gl == 1) gl_query_end(o); g_qopen = NULL; }
+    if (g_gl == 1 && !g_vk) gles_query_free(q);
+    free(q); o->gx = NULL;
+}
+static void gl_free(Obj* o) { if (o->type == T_QUERY) q_free(o); else if (g_vk) vb_free(o); else gles_free(o); }
+static void gl_query_begin(Obj* q) { if (g_vk) vq_begin(q); else gles_query_begin(q); }
+static void gl_query_end(Obj* q) { if (g_vk) vq_end(q); else gles_query_end(q); }
+static int gl_query_data(Obj* q, uint32_t flags, uint32_t* out) { return g_vk ? vq_data(q, flags, out) : gles_query_data(q, flags, out); }
 static void gl_tex_unlock(Obj* r, uint32_t s, uint32_t lvl) { if (g_vk) vb_tex_unlock(r, s, lvl); else gles_tex_unlock(r, s, lvl); }
 static void gl_buf_unlock(Obj* b, uint32_t off, uint32_t end, uint32_t flags) { if (g_vk) vb_buf_unlock(b, off, end, flags); else gles_buf_unlock(b, off, end, flags); }
 static void gl_release(void) { if (!g_vk) gles_release(); }

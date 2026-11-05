@@ -109,6 +109,7 @@ void hle_watch_release(uint32_t a, uint32_t n, const char* what);   /* hle_vmem:
 extern const HleDef hle_input_defs[]; extern const unsigned hle_input_ndefs;
 void hle_input_key(int dik, int down);                          /* DIK_* scan code */
 void hle_input_mouse(int dx, int dy, int dz, unsigned buttons); /* relative motion + button mask */
+int hle_input_mouse_exclusive(void);   /* v1.1.5: a DirectInput mouse is acquired exclusively (Windows hides the cursor) */
 /* XInput pad 0: XINPUT_GAMEPAD buttons mask, triggers 0..255, sticks -32768..32767 (Y up = positive) */
 void hle_xinput_set(unsigned buttons, int lt, int rt, int lx, int ly, int rx, int ry);
 void hle_xinput_connect(int on);
@@ -118,12 +119,19 @@ void hle_xinput_brief(char* out, size_t cap);
 void hle_ui_pointer(int fx, int fy, int fw, int fh, int button);
 void hle_ui_key(int vk, int dik, int down, int ch);
 void hle_ui_mouse_rel(int dx, int dy);       /* on-screen look area: DirectInput relative motion only */
-void hle_ui_mouse_button(int button);        /* on-screen fire/aim: 1/2 left down/up, 3/4 right down/up at the cursor */
+void hle_ui_mouse_button(int button);        /* on-screen fire/aim: 1/2 left down/up, 3/4 right down/up at the cursor; 5/6 middle (v1.1) */
+void hle_ui_pointer_rel(int fx, int fy, int fw, int fh, int dx, int dy);   /* v1.1 desktop: cursor + real DirectInput motion */
+void hle_ui_wheel(int delta);                /* v1.1 desktop: WM_MOUSEWHEEL + DirectInput Z (120 per notch) */
+void hle_ui_char(int ch);                    /* v1.1 desktop: WM_CHAR of text input */
+int  hle_ui_close(void);                     /* v1.1 desktop: WM_CLOSE to the game window (0: no window) */
 void hle_ui_brief(char* out, size_t cap);   /* pointer use counters for [hb] */
+int  hle_ui_cursor(int* x, int* y, int* w, int* h);   /* v1.1.5: cursor in client pixels + client size; 1 shown, 0 hidden, -1 no window */
 /* OpenAL 1.1 = OpenAL32.dll (hle_al.c): software mixer, AAudio output on Android, else a real-time null sink */
 extern const HleDef hle_al_defs[]; extern const unsigned hle_al_ndefs;
 int hle_al_enabled(void);
 uint32_t hle_al_module(void);                      /* pseudo module handle of OpenAL32.dll (0 when ME1_AL=0) */
+extern int (*hle_al_out_open)(int rate, const char** name);   /* v1.1: desktop front end audio device (SDL2), see hle_al.c */
+extern void (*hle_al_out_start)(void);
 void hle_al_render(int16_t* out, int frames);      /* mix stereo s16 frames (ME1_AL_SINK=manual: tests drive the mixer) */
 int  hle_al_rate(void);
 void hle_al_brief(char* out, size_t cap);

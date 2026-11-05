@@ -571,11 +571,27 @@ static void* sink_main(void* p) {
     }
     return NULL;
 }
+/* v1.1 (Linux port): the front end's audio device (SDL2). open(wanted rate) -> the device rate (0: none); the device
+ * pulls with hle_al_render from its own thread once start() runs. */
+int (*hle_al_out_open)(int rate, const char** name);
+void (*hle_al_out_start)(void);
+static int ext_open(void) {
+    if (!hle_al_out_open) return 0;
+    const char* e = getenv("ME1_AL_RATE"); const char* nm = "external";
+    int want = e && atoi(e) >= 8000 ? atoi(e) : g_lite_rate ? g_lite_rate : 48000;
+    int rate = hle_al_out_open(want, &nm);
+    if (rate < 8000) { fprintf(stderr, "[al] %s audio device not opened\n", nm); return 0; }
+    LK; g_rate = rate; UL;
+    g_backend = nm;
+    fprintf(stderr, "[al] output: %s %d Hz stereo s16\n", nm, rate);
+    if (hle_al_out_start) hle_al_out_start();
+    return 1;
+}
 static void out_start(void) {
     static int started; if (started) return; started = 1;
     const char* sink = getenv("ME1_AL_SINK");
     if (sink && !strcmp(sink, "manual")) { g_backend = "manual"; fprintf(stderr, "[al] output: manual (hle_al_render), %d Hz\n", g_rate); return; }
-    if (!(sink && !strcmp(sink, "null")) && aa_open()) return;
+    if (!(sink && !strcmp(sink, "null")) && (ext_open() || aa_open())) return;
     const char* w = getenv("ME1_AL_WAV");
     if (w && *w) { g_wav = fopen(w, "wb"); if (g_wav) wav_header(); else fprintf(stderr, "[al] cannot write %s\n", w); }
     pthread_t th; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);

@@ -13,7 +13,9 @@
  *      ME1_MAX_FRAMES=N  exit(0) after N presented frames, with the report
  *      ME1_MAX_SECONDS=N exit(0) N seconds after the first presented frame, with the report
  *      ME1_SCREEN=WxH    desktop mode reported to the game (default 1280x720)
- *      ME1_VRAM_MB=n     GetAvailableTextureMem (default 512) */
+ *      ME1_VRAM_MB=n     GetAvailableTextureMem (default 512)
+ *      ME1_OCCLUSION=0|1|2  v1.1.3 occlusion queries: 1 (default) real GPU results with D3D9 semantics (S_FALSE until the
+ *                        GPU is done), 2 never wait (the query's last finished result), 0 always "visible" (before v1.1.3) */
 #define _GNU_SOURCE
 #include "hle.h"
 #include <stdio.h>
@@ -82,6 +84,21 @@ static void gl_draw_x(Dev* d, uint32_t pt, uint32_t prims, int indexed, int32_t 
 static void gl_stretch(Obj* src, uint32_t sr, Obj* dst, uint32_t dr, uint32_t filter); static void gl_colorfill(Obj* surf, uint32_t rect, uint32_t color);
 static void gl_update_surface(Obj* src, uint32_t sr, Obj* dst, uint32_t dpt); static void gl_update_texture(Obj* src, Obj* dst);
 static void gl_get_rt_data(Obj* rt, Obj* dst); static void gl_rt_lock(Obj* r, uint32_t s, uint32_t lvl, uint32_t mem); static void gl_report(void);
+/* v1.1.3: occlusion queries (D3DQUERYTYPE_OCCLUSION). Until v1.1.2 every query reported "100000 pixels visible": the
+ * engine never culled anything hidden (all draws behind walls went to the GPU) and lens flares / coronas, whose
+ * brightness and size follow the visible pixel count, shone at full strength through walls and far too big.
+ * Vulkan: precise sample counts (VK_QUERY_TYPE_OCCLUSION); GLES: GL_ANY_SAMPLES_PASSED_CONSERVATIVE (visible or not). */
+typedef struct {
+    int st;                 /* 0 never issued, 1 between BEGIN and END, 2 issued (result pending), 3 result known */
+    int over;               /* the result cannot be measured (pool full, frame split, draw skipped): report "visible" */
+    int n, att, rec, polls; /* n: backend sub-queries; att/rec: draws inside the query attempted / recorded by the backend */
+    uint32_t slot, sub[8], res, last; int has_last; uint64_t ser; double t0;
+    uint32_t glq[8]; void* ctx; uint32_t rtw, rth;   /* GLES: query names, their context; render target size at the first draw */
+} QRes;
+static Obj* g_qopen;        /* the occlusion query between Issue(BEGIN) and Issue(END) */
+static int g_occl = 1;      /* ME1_OCCLUSION */
+static struct { uint64_t issued, ready, zero, fallback, notready, flushes, waits; double wait_s; } g_qs, g_qs0;
+static void gl_query_begin(Obj* q); static void gl_query_end(Obj* q); static int gl_query_data(Obj* q, uint32_t flags, uint32_t* out);
 
 static pthread_mutex_t g_mx;
 static __thread const char* g_cur;          /* method being executed (for logs) */
@@ -353,6 +370,7 @@ static void d3d_init(void) {
     if ((e = getenv("ME1_MAX_SECONDS"))) g_maxsecs = atof(e);
     if ((e = getenv("ME1_FPS_LIMIT")) && atoi(e) > 0) { int l = atoi(e); g_fpslimit = l < 10 ? 10 : l > 240 ? 240 : l; }
     if ((e = getenv("ME1_D3D_DUMP")) && *e) { g_dump = e; mkdir(e, 0755); }
+    if ((e = getenv("ME1_OCCLUSION")) && *e >= '0' && *e <= '2') g_occl = *e - '0';
     if (g_fpslimit) fprintf(stderr, "[d3d] fps limit %d (ME1_FPS_LIMIT)\n", g_fpslimit); else fprintf(stderr, "[d3d] fps limit off\n");
     init_modes();
     g_st.t0 = g_st.tlast = mono();
@@ -679,11 +697,57 @@ static uint32_t m_GetFunction(CPU* c) {
     if (p) memcpy(M + p, o->blob, o->bloblen);
     wr32(pn, o->bloblen); return OK_;
 }
-/* queries: events are always signalled, occlusion queries report "visible" */
+/* queries: events are always signalled (the D3D calls are executed in order anyway); occlusion queries (v1.1.3): the
+ * backend measures the draws between BEGIN and END, GetData returns S_FALSE until the GPU has finished them */
 static uint32_t m_Query_GetDataSize(CPU* c) { (void)c; return 4; }
+static uint32_t q_area(const QRes* q) {   /* a "visible" pixel count without a measurement: 0.5% of the render target */
+    uint32_t a = q && q->rtw ? q->rtw * q->rth : g_scrw * g_scrh;
+    return a / 200 ? a / 200 : 1;
+}
+static uint32_t q_visible(const QRes* q) {   /* nothing could be measured: the query's last result (at least 1), else q_area */
+    if (q && q->has_last) return q->last ? q->last : 1;
+    return q_area(q);
+}
+static void q_done(QRes* q, uint32_t v, int measured) {
+    q->st = 3; q->res = v; q->last = v; q->has_last = 1;
+    if (measured) { g_qs.ready++; if (!v) g_qs.zero++; } else g_qs.fallback++;
+}
+static void q_close(Obj* o) {   /* Issue(END) of the open query (or BEGIN of another one) */
+    QRes* q = o->gx; if (!q) return;
+    if (g_gl == 1) gl_query_end(o);
+    if (g_qopen == o) g_qopen = NULL;
+    q->st = 2; q->polls = 0; q->t0 = 0;
+    if (!q->att) q_done(q, 0, 1);                                    /* nothing drawn: 0 samples, as in D3D9 */
+    else if (q->over || q->att != q->rec || !q->n) q_done(q, q_visible(q), 0);   /* a draw was skipped / not measurable */
+}
+static uint32_t m_Query_Issue(CPU* c) {
+    Obj* o = SELF; uint32_t f = A(1); if (!o || o->type != T_QUERY) return ERR_INVALIDCALL;
+    QRes* q = o->gx;
+    if (o->qtype != 9 || !q) return OK_;
+    if (f & 2) {   /* D3DISSUE_BEGIN */
+        if (g_qopen) q_close(g_qopen);   /* one occlusion query at a time: BEGIN of another one ends it */
+        q->st = 1; q->over = 0; q->n = q->att = q->rec = 0; q->polls = 0; q->t0 = 0; q->ctx = NULL; q->rtw = q->rth = 0;
+        g_qopen = o; g_qs.issued++;
+        if (g_gl == 1) gl_query_begin(o);
+    } else if (f & 1) {   /* D3DISSUE_END */
+        if (g_qopen == o) q_close(o);
+        else if (q->st != 2) q_done(q, 0, 1);   /* END without BEGIN: an empty query */
+    }
+    return OK_;
+}
 static uint32_t m_Query_GetData(CPU* c) {
     Obj* o = SELF; uint32_t p = A(1), n = A(2); if (!o) return ERR_INVALIDCALL;
-    if (p && n >= 4) wr32(p, o->qtype == 8 ? 1 : 100000);
+    uint32_t v = 1;
+    if (o->qtype == 9) {
+        QRes* q = o->gx;
+        if (!q || !g_occl || g_gl != 1 || q->st == 0 || q->st == 1) v = q_visible(q);   /* never issued / still open */
+        else if (q->st == 3) v = q->res;
+        else if (!gl_query_data(o, A(3), &v)) {   /* not finished on the GPU */
+            if (g_occl == 2) v = q_visible(q);
+            else { g_qs.notready++; return 1; }   /* S_FALSE */
+        }
+    }
+    if (p && n >= 4) wr32(p, v);
     return OK_;
 }
 /* ID3DXBuffer */
@@ -874,7 +938,14 @@ static uint32_t present(Obj* bb) {
         uint32_t nres; uint64_t resv, peak; hle_vmem_stats(&nres, &resv, &peak);
         unsigned alive = 0; for (int i = 1; i < T_N; i++) alive += g_st.alive[i];
         char gt[320] = ""; if (g_gl == 1) gl_frame_times(gt, sizeof gt, nf);
-        char cap[48] = ""; if (g_cap_last_skipped) snprintf(cap, sizeof cap, ", capped %u draws", g_cap_last_skipped);
+        char cap[200] = ""; size_t ck = 0; if (g_cap_last_skipped) ck = (size_t)snprintf(cap, sizeof cap, ", capped %u draws", g_cap_last_skipped);
+        if (g_qs.issued != g_qs0.issued && nf) {   /* v1.1.3: occlusion queries per frame, share hidden, time spent waiting for results */
+            double qi = (double)(g_qs.issued - g_qs0.issued), qr = (double)(g_qs.ready - g_qs0.ready);
+            snprintf(cap + ck, sizeof cap - ck, ", occlusion %.0f/frame (%.0f%% hidden, %.0f%% unmeasured, %.1f ms/frame waits, %.1f flushes/frame)",
+                     qi / nf, qr > 0 ? 100.0 * (double)(g_qs.zero - g_qs0.zero) / qr : 0.0, 100.0 * (double)(g_qs.fallback - g_qs0.fallback) / qi,
+                     (g_qs.wait_s - g_qs0.wait_s) * 1000.0 / nf, (double)(g_qs.flushes - g_qs0.flushes) / nf);
+            g_qs0 = g_qs;
+        }
         long rss = 0; { FILE* f = fopen("/proc/self/status", "r"); char l[128];
                          while (f && fgets(l, sizeof l, f)) if (!strncmp(l, "VmRSS:", 6)) { rss = atol(l + 6); break; }
                          if (f) fclose(f); }   /* v0.10.12 (P2-7): process memory in the frame log */
@@ -1043,6 +1114,7 @@ static uint32_t m_GetNPatchMode(CPU* c) { fpush(c, 0.0); return 0; }
 static const char* const ptname[7] = { "?", "points", "lines", "linestrip", "tris", "tristrip", "trifan" };
 static int draw(const char* what, uint32_t pt, uint32_t n) {   /* v0.10.12 (P0-5): 0 = cut by the PhoneModify cap */
     unsigned md = hle_mod_maxdraws(), mp = hle_mod_maxprims();
+    if (g_qopen) { QRes* q = g_qopen->gx; q->att++; }   /* v1.1.3: a draw inside an occlusion query */
     if ((md && g_cap_draws >= md) || (mp && g_cap_prims + n > mp)) { g_cap_skipped++; return 0; }
     g_cap_draws++; g_cap_prims += n;
     g_st.draws++; g_st.prims += n;
@@ -1131,7 +1203,9 @@ static uint32_t m_CreateQuery(CPU* c) {
         return ERR_NOTAVAILABLE;
     }
     if (!pp) return OK_;
-    Obj* o = newobj(T_QUERY); o->qtype = t; wr32(pp, o->g); return OK_;
+    Obj* o = newobj(T_QUERY); o->qtype = t;
+    if (t == 9) o->gx = calloc(1, sizeof(QRes));   /* freed by gl_free (hle_d3d9_vk.h) */
+    wr32(pp, o->g); return OK_;
 }
 /* IDirect3DSwapChain9 */
 static uint32_t m_Swap_Present(CPU* c) { if (g_d3dlost) return D3DERR_DEVICELOST_; Obj* s = SELF; return present(s && s->type == T_SWAP ? s->bb : NULL); }
@@ -1395,7 +1469,7 @@ static uint32_t x_D3DXUVAtlasCreate(CPU* c) { return x_mesh_fail(c, "D3DXUVAtlas
 #define L_PS(X) UNK(IDirect3DPixelShader9, X) X(IDirect3DPixelShader9, GetDevice, 2, m_GetDevice) \
     X(IDirect3DPixelShader9, GetFunction, 3, m_GetFunction)
 #define L_QUERY(X) UNK(IDirect3DQuery9, X) X(IDirect3DQuery9, GetDevice, 2, m_GetDevice) X(IDirect3DQuery9, GetType, 1, m_GetType) \
-    X(IDirect3DQuery9, GetDataSize, 1, m_Query_GetDataSize) X(IDirect3DQuery9, Issue, 2, m_ok) X(IDirect3DQuery9, GetData, 4, m_Query_GetData)
+    X(IDirect3DQuery9, GetDataSize, 1, m_Query_GetDataSize) X(IDirect3DQuery9, Issue, 2, m_Query_Issue) X(IDirect3DQuery9, GetData, 4, m_Query_GetData)
 #define L_SB(X) UNK(IDirect3DStateBlock9, X) X(IDirect3DStateBlock9, GetDevice, 2, m_GetDevice) \
     X(IDirect3DStateBlock9, Capture, 1, m_ok) X(IDirect3DStateBlock9, Apply, 1, m_ok)
 #define L_XBUF(X) UNK(ID3DXBuffer, X) X(ID3DXBuffer, GetBufferPointer, 1, m_Buf_GetBufferPointer) X(ID3DXBuffer, GetBufferSize, 1, m_Buf_GetBufferSize)

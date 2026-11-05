@@ -28,6 +28,7 @@ enum { DEV_MOUSE = 1, DEV_KEYBOARD = 2 };
 typedef struct { uint32_t ofs, data, time, seq; } Ev;
 typedef struct {
     int type, refs, acquired; uint32_t bufsize, coop, hevent;
+    uint32_t unacq_ms;                                         /* v1.1.5: time of the last Unacquire */
     uint8_t keys[256]; int32_t mx, my, mz; uint8_t mbtn[8];   /* immediate state; mouse axes are relative deltas */
     Ev ring[RING]; unsigned head, tail;                        /* buffered data */
 } Dev;
@@ -174,7 +175,17 @@ static void dv_SetProperty(CPU* c) {
     RET(DI_OK);   /* DIPROP_AXISMODE (2), granularity, ...: accepted */
 }
 static void dv_Acquire(CPU* c) { Dev* d = dev_of(SELF); if (d) { if (!d->acquired) TR("Acquire(%s)\n", d->type == DEV_MOUSE ? "mouse" : "keyboard"); d->acquired = 1; } RET(DI_OK); }
-static void dv_Unacquire(CPU* c) { Dev* d = dev_of(SELF); if (d) d->acquired = 0; RET(DI_OK); }
+static void dv_Unacquire(CPU* c) { Dev* d = dev_of(SELF); if (d) { d->acquired = 0; d->unacq_ms = now_ms(); } RET(DI_OK); }
+/* v1.1.5: Windows hides the cursor while a mouse is acquired in exclusive mode (DISCL_EXCLUSIVE). A short Unacquire
+ * (re-acquire with another cooperative level, every frame in UE3) does not count. Read without g_imx: called by
+ * hle_exe.c with its window lock held, only plain ints are read. */
+int hle_input_mouse_exclusive(void) {
+    for (int i = 1; i < 3; i++) {
+        Dev* d = &g_dev[i];
+        if (d->type == DEV_MOUSE && (d->coop & 1) && (d->acquired || now_ms() - d->unacq_ms < 100)) return 1;
+    }
+    return 0;
+}
 static void dv_GetDeviceState(CPU* c) {   /* (this, cbData, lpvData) */
     Dev* d = dev_of(SELF); uint32_t n = ARG(1), p = ARG(2);
     if (!d || !p) { RET(DIERR_INVALIDPARAM); return; }
@@ -207,7 +218,12 @@ static void dv_GetDeviceData(CPU* c) {   /* (this, cbObjectData, rgdod, pdwInOut
 }
 static void dv_SetDataFormat(CPU* c) { Dev* d = dev_of(SELF); TR("SetDataFormat(%s, %u bytes)\n", d && d->type == DEV_MOUSE ? "mouse" : "keyboard", ARG(1) ? rd32(ARG(1) + 12) : 0); RET(DI_OK); }
 static void dv_SetEventNotification(CPU* c) { Dev* d = dev_of(SELF); if (d) d->hevent = ARG(1); RET(DI_OK); }
-static void dv_SetCooperativeLevel(CPU* c) { Dev* d = dev_of(SELF); if (d) d->coop = ARG(2); TR("SetCooperativeLevel(%s, %x)\n", d && d->type == DEV_MOUSE ? "mouse" : "keyboard", ARG(2)); RET(DI_OK); }
+static void dv_SetCooperativeLevel(CPU* c) {
+    Dev* d = dev_of(SELF);
+    if (d && d->type == DEV_MOUSE && d->coop != ARG(2)) {   /* v1.1.5: exclusive (gameplay) / non-exclusive (cursor) - changes are logged */
+        static unsigned n; if (n++ < 200) fprintf(stderr, "[dinput] mouse cooperative level %x -> %x (%s)\n", d->coop, ARG(2), ARG(2) & 1 ? "exclusive" : "non-exclusive");
+    }
+    if (d) d->coop = ARG(2); TR("SetCooperativeLevel(%s, %x)\n", d && d->type == DEV_MOUSE ? "mouse" : "keyboard", ARG(2)); RET(DI_OK); }
 static void dv_GetDeviceInfo(CPU* c) {   /* DIDEVICEINSTANCEW: size, guidInstance, guidProduct, dwDevType, tszInstanceName[260], tszProductName[260], ... */
     Dev* d = dev_of(SELF); uint32_t p = ARG(1); if (!d || !p) { RET(DIERR_INVALIDPARAM); return; }
     uint32_t sz = rd32(p); if (sz < 44) { RET(DIERR_INVALIDPARAM); return; }

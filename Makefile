@@ -1,4 +1,10 @@
 CC ?= gcc
+# v1.1: native aarch64 Linux host (Raspberry Pi 5, Ampere, Asahi...): x86 code needs signed char; RCPC (ARMv8.3+) gives
+# cheap acquire loads for the TSO accesses. Raspberry Pi 4 / Cortex-A72: make ... ARM_FLAGS=-march=armv8-a
+ifeq ($(shell uname -m),aarch64)
+ARM_FLAGS ?= -march=armv8.2-a+rcpc
+override CC := $(CC) -fsigned-char $(ARM_FLAGS)
+endif
 CFLAGS ?= -O1 -g -w -fwrapv -fno-strict-aliasing -Iruntime -Iruntime/khr -Isettings -Iout/physxloader
 RT = runtime/rt.c runtime/rt_fp.c runtime/hle_win32.c runtime/hle_sys.c runtime/hle_fs.c runtime/hle_mod.c runtime/hle_thread.c runtime/hle_seh.c runtime/hle_exe.c runtime/hle_vmem.c runtime/hle_d3d9.c runtime/sm3_glsl.c runtime/hle_hb.c runtime/hle_input.c runtime/hle_al.c settings/ini.c settings/me1settings.c
 PXL = $(wildcard out/physxloader/*.c)
@@ -186,10 +192,10 @@ build/libme1vkshim.so: android/jni/vkshim.c
 	mkdir -p build && $(CC) -O2 -shared -fPIC -fvisibility=hidden -o $@ $<
 # v0.10: libme1spv.so - GLSL -> SPIR-V (glslang 15, static) for the Vulkan renderer (hle_d3d9_vk.h loads it with dlopen)
 GLSLANG_SRC ?= /data/build3p/glslang-15.0.0
-GLSLANG_HOST_LIBS = -Wl,--whole-archive /usr/lib64/libglslang-default-resource-limits.a -Wl,--no-whole-archive /usr/lib64/libglslang.a \
-	/usr/lib64/libSPIRV.a /usr/lib64/libMachineIndependent.a /usr/lib64/libGenericCodeGen.a /usr/lib64/libOSDependent.a -lSPIRV-Tools-opt -lSPIRV-Tools
-build/libme1spv.so: android/jni/me1spv.c
-	mkdir -p build && gcc -O2 -shared -fPIC -fvisibility=hidden -o $@ $< $(GLSLANG_HOST_LIBS) -lstdc++ -lm -lpthread -Wl,--no-undefined
+# host libme1spv.so: tools/build_spv_host.sh finds the system glslang (static on Debian/Ubuntu, shared on Fedora/Arch);
+# if there is none, it only prints a hint (Vulkan renderer off, GL works) and the build goes on
+build/libme1spv.so: android/jni/me1spv.c tools/build_spv_host.sh
+	@CC="$(CC)" sh tools/build_spv_host.sh $@
 GA = $(GLSLANG_SRC)/build-android/glslang
 build/android/libme1spv.so: android/jni/me1spv.c android/jni/me1spv.map
 	mkdir -p build/android && $(ACC) -O2 -fPIC -fvisibility=hidden -I$(GLSLANG_SRC) -I$(GLSLANG_SRC)/build-android/include -c -o build/android/me1spv.o $<
@@ -252,3 +258,60 @@ build/test_mod: $(RT) runtime/test_mod.c runtime/*.h settings/*.h
 	mkdir -p build && $(CC) $(CFLAGS) -o $@ $(RT) runtime/test_mod.c -lm -ldl -pthread
 build/android/test_mod_static: $(RT) runtime/test_mod.c runtime/*.h settings/*.h
 	mkdir -p build/android && $(ACC) $(AFLAGS) -static -o $@ $(RT) runtime/test_mod.c -lm -ldl -pthread
+
+# ---- v1.1: desktop Linux (x86-64 / aarch64) - SDL2 front end linux/me1_linux.c + the same recompiled modules ----
+# make linux       -> build/linux/me1-linux (+ build/linux/libme1spv.so, me1cfg); needs out/ from tools/recomp.py (see README)
+# make linux-demo  -> build/linux/me1-demo: the front end with a D3D9/OpenAL/input demo instead of MassEffect.exe (no game files)
+# aarch64 hosts: the same commands (CC gets -fsigned-char -march=armv8.2-a+rcpc, see the top; Raspberry Pi 4: ARM_FLAGS=-march=armv8-a)
+SDL_CFLAGS ?= $(shell sdl2-config --cflags)
+SDL_LIBS ?= $(shell sdl2-config --libs)
+LCFLAGS = -O2 -g -fsigned-char -fwrapv -fno-strict-aliasing -w -Iruntime -Iruntime/khr -Isettings -Iout/physxloader
+LRT_O = $(patsubst %.c,build/linux/rt/%.o,$(notdir $(RT) $(PXL)))
+LDEF = -DME1_LIB -DWITH_PXC -DWITH_D3DX -DWITH_VORBIS -DWITH_BINK
+build/linux/rt/%.o: %.c runtime/*.h settings/*.h
+	@mkdir -p build/linux/rt && $(CC) $(LCFLAGS) -c $< -o $@
+build/linux/rt/main_exe.o: runtime/main_exe.c runtime/*.h
+	@mkdir -p build/linux/rt && $(CC) $(LCFLAGS) $(LDEF) -c $< -o $@
+build/linux/rt/me1_linux.o: linux/me1_linux.c linux/*.h runtime/*.h settings/*.h
+	@mkdir -p build/linux/rt && $(CC) $(LCFLAGS) -Ilinux -Wall -Wno-unused-parameter -Wno-misleading-indentation $(SDL_CFLAGS) -c $< -o $@
+build/linux/rt/me1_linux_demo.o: linux/me1_linux.c linux/*.h runtime/*.h settings/*.h
+	@mkdir -p build/linux/rt && $(CC) $(LCFLAGS) -Ilinux -DME1_DEMO_BUILD $(SDL_CFLAGS) -c $< -o $@
+build/linux/rt/demo_d3d9.o: linux/demo_d3d9.c runtime/*.h
+	@mkdir -p build/linux/rt && $(CC) $(LCFLAGS) -c $< -o $@
+# v1.1.2: the launcher's UI (also the loading screen of me1-linux), translations, GPU probe, embedded fonts/images/json
+LUI_O = build/linux/rt/ui.o build/linux/rt/i18n.o build/linux/rt/gpuprobe.o build/linux/rt/assets.o
+LUI_FLAGS = -O2 -g -Wall -Wno-format-truncation -Wno-misleading-indentation -Wno-unused-function -Ilinux -Isettings -Iruntime/khr $(SDL_CFLAGS)
+build/linux/rt/ui.o: linux/ui.c linux/ui.h linux/third_party/*.h
+	@mkdir -p build/linux/rt && $(CC) $(LUI_FLAGS) -c $< -o $@
+build/linux/rt/i18n.o: linux/i18n.c linux/i18n.h
+	@mkdir -p build/linux/rt && $(CC) $(LUI_FLAGS) -c $< -o $@
+build/linux/rt/gpuprobe.o: linux/gpuprobe.c linux/gpuprobe.h
+	@mkdir -p build/linux/rt && $(CC) $(LUI_FLAGS) -c $< -o $@
+build/linux/rt/assets.o: linux/assets.S linux/assets/* android/assets/loading.jpg android/assets/i18n/*.json linux/i18n/*.json
+	@mkdir -p build/linux/rt && $(CC) -c $< -o $@
+build/linux/rt/launcher.o: linux/launcher.c linux/*.h settings/*.h
+	@mkdir -p build/linux/rt && $(CC) $(LUI_FLAGS) -Wno-unused-parameter -c $< -o $@
+build/linux/rt/l_ini.o: settings/ini.c settings/ini.h
+	@mkdir -p build/linux/rt && $(CC) $(LUI_FLAGS) -c $< -o $@
+build/linux/rt/l_me1settings.o: settings/me1settings.c settings/*.h
+	@mkdir -p build/linux/rt && $(CC) $(LUI_FLAGS) -w -c $< -o $@
+build/linux/me1-launcher: build/linux/rt/launcher.o build/linux/rt/l_ini.o build/linux/rt/l_me1settings.o $(LUI_O)
+	$(CC) -o $@ $^ $(SDL_LIBS) -lm -ldl -pthread
+# the recompiled modules: the same host objects as build/test_exe (build/exe, build/crt, build/dx, ...)
+linux-check:
+	@test -n "$(EXE_C)" -a -n "$(CRT)" -a -n "$(CPP)" || { echo "make linux: нет out/exe, out/msvcr80, out/msvcp80 - сначала рекомпиляция своих файлов игры (linux/README.md, шаг 2)"; exit 1; }
+.PHONY: linux-check
+build/linux/me1-linux: | linux-check
+build/linux/me1-linux: $(LRT_O) build/linux/rt/main_exe.o build/linux/rt/me1_linux.o $(LUI_O) $(CRT_O) $(CPP_O) $(PXC_O) $(DX_O) $(VB_O) $(BK_O) $(EXE_O)
+	$(CC) -o $@ $^ $(SDL_LIBS) -lm -ldl -pthread -rdynamic
+build/linux/me1-demo: $(LRT_O) build/linux/rt/demo_d3d9.o build/linux/rt/me1_linux_demo.o $(LUI_O)
+	$(CC) -o $@ $^ $(SDL_LIBS) -lm -ldl -pthread -rdynamic
+build/linux/libme1spv.so: android/jni/me1spv.c tools/build_spv_host.sh
+	@CC="$(CC)" sh tools/build_spv_host.sh $@
+build/linux/me1cfg: build/me1cfg
+	@mkdir -p build/linux && cp $< $@
+linux: build/linux/me1-linux build/linux/libme1spv.so build/linux/me1cfg build/linux/me1-launcher
+linux-demo: build/linux/me1-demo build/linux/libme1spv.so build/linux/me1-launcher
+linux-install: linux
+	linux/install.sh
+.PHONY: linux linux-demo linux-install

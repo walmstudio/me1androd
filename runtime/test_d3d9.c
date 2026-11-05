@@ -272,6 +272,11 @@ int main(int argc, char** argv) {
         CHECK(com(m, 9, 2, 20u, st) == 0 && rd32(st) == 0 && M[st + 12] == 0x80, "deltas reset, button still down");
         hle_input_key(0x1E, 1);
         CHECK(com(k, 9, 2, 256u, st) == 0 && M[st + 0x1E] == 0x80 && M[st + 0x1F] == 0, "keyboard GetDeviceState: DIK_A down");
+        /* v1.1.5: an exclusive mouse hides the Windows cursor (hle_ui_cursor) */
+        CHECK(!hle_input_mouse_exclusive(), "non-exclusive mouse: the cursor stays");
+        CHECK(com(m, 13, 2, 0x10000u, 5u) == 0 && hle_input_mouse_exclusive(), "DISCL_EXCLUSIVE + acquired: the cursor is hidden");
+        CHECK(com(m, 8, 0) == 0 && hle_input_mouse_exclusive(), "a short Unacquire (re-acquire every frame) keeps it hidden");
+        CHECK(com(m, 13, 2, 0x10000u, 6u) == 0 && com(m, 7, 0) == 0 && !hle_input_mouse_exclusive(), "back to non-exclusive");
         CHECK(com(m, 8, 0) == 0 && com(m, 2, 0) == 0 && com(k, 2, 0) == 0 && com(di, 2, 0) <= 1, "Unacquire + Release");
     }
     {   /* user32 window manager (hle_exe.c) */
@@ -306,12 +311,14 @@ int main(int argc, char** argv) {
             CHECK(api("user32.dll", "GetCursorPos", 1, pt) && rd32(pt) == 650 && rd32(pt + 4) == 320, "GetCursorPos after touch: %u,%u", rd32(pt), rd32(pt + 4));
             CHECK(api("user32.dll", "GetAsyncKeyState", 1, 1u) & 0x8000u, "GetAsyncKeyState(VK_LBUTTON) down");
             CHECK(!(api("user32.dll", "GetKeyState", 1, 1u) & 0x8000u), "GetKeyState(VK_LBUTTON) waits for WM_LBUTTONDOWN");
-            CHECK(api("user32.dll", "PeekMessageW", 5, msg, 0u, 0u, 0u, 0u) == 1 && rd32(msg + 4) == 0x200 && rd32(msg) == h, "PM_NOREMOVE: WM_MOUSEMOVE");
+            CHECK(api("user32.dll", "PeekMessageW", 5, msg, 0u, 0u, 0u, 0u) == 1 && rd32(msg + 4) == 0x20 && rd32(msg) == h && rd32(msg + 8) == h &&
+                  rd32(msg + 12) == 0x02010001u, "PM_NOREMOVE: WM_SETCURSOR (hwnd, HTCLIENT | WM_LBUTTONDOWN << 16: %08x) first", rd32(msg + 12));
             CHECK(api("user32.dll", "PeekMessageW", 5, msg, 0u, 0x201u, 0x201u, 1u) == 0, "WM_LBUTTONDOWN held back until the cursor jump was seen");
             { struct timespec ts = { 0, 410000000 }; nanosleep(&ts, NULL); }   /* no frames are presented here: the 400 ms limit */
             CHECK(api("user32.dll", "PeekMessageW", 5, msg, 0u, 0x201u, 0x201u, 1u) == 1 && rd32(msg + 4) == 0x201 && rd32(msg + 12) == ((300u << 16) | 640u),
                   "filtered PeekMessage: WM_LBUTTONDOWN at client 640,300 (lParam %08x)", rd32(msg + 12));
             CHECK(api("user32.dll", "GetKeyState", 1, 1u) & 0x8000u, "GetKeyState(VK_LBUTTON) down once WM_LBUTTONDOWN was retrieved");
+            CHECK(api("user32.dll", "PeekMessageW", 5, msg, 0u, 0u, 0u, 1u) == 1 && rd32(msg + 4) == 0x20, "then the WM_SETCURSOR");
             CHECK(api("user32.dll", "PeekMessageW", 5, msg, 0u, 0u, 0u, 1u) == 1 && rd32(msg + 4) == 0x200, "then the WM_MOUSEMOVE");
             CHECK(api("user32.dll", "DispatchMessageW", 1, msg) == 1, "DispatchMessageW calls the window procedure");
             CHECK(api("user32.dll", "PeekMessageW", 5, msg, 0u, 0u, 0u, 1u) == 0, "queue drained");
@@ -329,7 +336,12 @@ int main(int argc, char** argv) {
             CHECK(api("user32.dll", "GetKeyState", 1, 0x1Bu) & 0x8000u, "GetKeyState(VK_ESCAPE) down");
             hle_ui_key(0x1B, 0x01, 0, 0);
             while (api("user32.dll", "PeekMessageW", 5, msg, 0u, 0u, 0u, 1u)) {}
-            /* on-screen fire button: a click at the current cursor, the cursor does not move; look area: no messages */
+            /* on-screen fire button: a click at the current cursor, the cursor does not move; look area while the game
+               hides the cursor (captured mouse, gameplay): no messages */
+            int ccx = 0, ccy = 0, ccw = 0, cch = 0;
+            CHECK(api("user32.dll", "ShowCursor", 1, 0u) == 0xFFFFFFFFu, "ShowCursor(FALSE) -> -1");
+            CHECK(hle_ui_cursor(&ccx, &ccy, &ccw, &cch) == 0 && ccx == 640 && ccy == 300 && ccw == 1280 && cch == 600,
+                  "hle_ui_cursor: hidden at client 640,300 of 1280x600 (%d,%d of %dx%d)", ccx, ccy, ccw, cch);
             hle_ui_mouse_rel(25, -7);
             CHECK(api("user32.dll", "PeekMessageW", 5, msg, 0u, 0u, 0u, 1u) == 0, "look area: no window messages");
             hle_ui_mouse_button(1);
@@ -341,6 +353,26 @@ int main(int argc, char** argv) {
             hle_ui_mouse_button(2);
             { struct timespec ts = { 0, 410000000 }; nanosleep(&ts, NULL); }
             CHECK(api("user32.dll", "PeekMessageW", 5, msg, 0u, 0x202u, 0x202u, 1u) == 1, "fire button: WM_LBUTTONUP");
+            while (api("user32.dll", "PeekMessageW", 5, msg, 0u, 0u, 0u, 1u)) {}
+            /* v1.1.5: the cursor shown (menus): look-area motion moves it like a mouse; SetCursor(NULL) hides it */
+            CHECK(api("user32.dll", "ShowCursor", 1, 1u) == 0, "ShowCursor(TRUE) -> 0");
+            hle_ui_mouse_rel(25, -7);
+            hle_ui_mouse_rel(0, 0);   /* no motion: nothing queued */
+            CHECK(api("user32.dll", "PeekMessageW", 5, msg, 0u, 0u, 0u, 1u) == 1 && rd32(msg + 4) == 0x20 && rd32(msg + 12) == 0x02000001u,
+                  "look area with the cursor shown: WM_SETCURSOR (lParam %08x)", rd32(msg + 12));
+            CHECK(api("user32.dll", "PeekMessageW", 5, msg, 0u, 0u, 0u, 1u) == 1 && rd32(msg + 4) == 0x200 && rd32(msg + 12) == ((293u << 16) | 665u),
+                  "look area with the cursor shown: WM_MOUSEMOVE at client 665,293 (lParam %08x)", rd32(msg + 12));
+            CHECK(hle_ui_cursor(&ccx, &ccy, &ccw, &cch) == 1 && ccx == 665 && ccy == 293, "hle_ui_cursor: shown at 665,293 (%d,%d)", ccx, ccy);
+            CHECK(api("user32.dll", "GetCursorPos", 1, pt) && rd32(pt) == 675 && rd32(pt + 4) == 313, "GetCursorPos follows: %u,%u", rd32(pt), rd32(pt + 4));
+            api("user32.dll", "SetCursor", 1, 0u);
+            CHECK(hle_ui_cursor(&ccx, &ccy, &ccw, &cch) == 0, "SetCursor(NULL) hides the cursor");
+            api("user32.dll", "SetCursor", 1, 0x00C10010u);
+            CHECK(hle_ui_cursor(&ccx, &ccy, &ccw, &cch) == 1, "SetCursor(arrow) shows it again");
+            api("user32.dll", "SetCapture", 1, h);
+            hle_ui_mouse_rel(-25, 7);
+            CHECK(api("user32.dll", "PeekMessageW", 5, msg, 0u, 0u, 0u, 1u) == 1 && rd32(msg + 4) == 0x200, "mouse captured (SetCapture): no WM_SETCURSOR");
+            CHECK(api("user32.dll", "ReleaseCapture", 0) == 1, "ReleaseCapture");
+            hle_ui_pointer(400, 300, 800, 600, 0);   /* back to client 640,300 for the tests below */
             while (api("user32.dll", "PeekMessageW", 5, msg, 0u, 0u, 0u, 1u)) {}
         }
         uint32_t child = api("user32.dll", "CreateWindowExW", 12, 0u, atom, 0u, 0x40000000u, 0u, 0u, 100u, 100u, h, 7u, 0x10900000u, 0u);

@@ -12,8 +12,12 @@ static const char* const FILE_NAME[SF_COUNT] = { "Engine", "Game", "Input", "Por
 
 static const SetChoice RES[] = {
     {"640x360", "640×360"}, {"854x480", "854×480"}, {"960x540", "960×540"}, {"1024x576", "1024×576"},
-    {"1280x720", "1280×720"}, {"1600x900", "1600×900"}, {"1920x1080", "1920×1080"},
-    {"800x600", "800×600 (4:3)"}, {"1024x768", "1024×768 (4:3)"}, {0, 0} };
+    {"1280x720", "1280×720"}, {"1366x768", "1366×768"}, {"1600x900", "1600×900"}, {"1920x1080", "1920×1080"},
+    {"2560x1440", "2560×1440"}, {"3840x2160", "3840×2160 (4K)"},
+    {"1280x800", "1280×800 (16:10)"}, {"1440x900", "1440×900 (16:10)"}, {"1680x1050", "1680×1050 (16:10)"},
+    {"1920x1200", "1920×1200 (16:10)"}, {"2560x1600", "2560×1600 (16:10)"},
+    {"2560x1080", "2560×1080 (21:9)"}, {"3440x1440", "3440×1440 (21:9)"},
+    {"800x600", "800×600 (4:3)"}, {"1024x768", "1024×768 (4:3)"}, {"1280x1024", "1280×1024 (5:4)"}, {0, 0} };
 static const SetChoice TEXDETAIL[] = { {"0", "Низкая (до 512)"}, {"1", "Средняя (до 1024)"}, {"2", "Высокая (до 2048)"}, {"3", "Максимальная (до 4096)"}, {0, 0} };
 static const SetChoice FILTER[] = { {"0", "Низкое"}, {"1", "Среднее"}, {"2", "Высокое"}, {0, 0} };
 static const SetChoice PARTICLES[] = { {"0", "Высокая"}, {"1", "Средняя"}, {"2", "Низкая"}, {0, 0} };
@@ -46,6 +50,13 @@ const SettingDef me1_settings[] = {
         SF_ENGINE, "SystemSettings", "ParticleLODBias", 0, 0, ST_ENUM, "1", 0, 2, PARTICLES},
     {"gfx.post_process", "Графика", "Постобработка", "Bloom, глубина резкости и т. п.",
         SF_ENGINE, "Engine.GameEngine", "bUsePostProcessEffects", 0, "Engine.RenderDevice", ST_BOOL, "1", 0, 0, 0},
+    /* v1.1.3: single effects (the switch above turns all post-processing off) */
+    {"gfx.lens_flares", "Графика", "Блики линз", "LensFlares: блики и ореолы от солнца и ламп. Выключите, если они слишком яркие "
+        "или мешают",
+        SF_ENGINE, "SystemSettings", "LensFlares", 0, 0, ST_BOOL, "1", 0, 0, 0},
+    {"gfx.bloom", "Графика", "Свечение (bloom)", "Bloom: ореол вокруг ярких мест. Выключите, если картинка в дымке или нужно "
+        "больше FPS на слабой видеокарте",
+        SF_ENGINE, "SystemSettings", "Bloom", 0, 0, ST_BOOL, "1", 0, 0, 0},
     {"gfx.max_texture_size", "Графика", "Макс. размер текстуры", "MaxTextureSize рендерера",
         SF_ENGINE, "D3DDrv.D3DRenderDevice", "MaxTextureSize", 0, 0, ST_ENUM, "2048", 0, 0, TEXSIZE},
     {"gfx.screen_percentage", "Графика", "Масштаб 3D-сцены", "ScreenPercentage: 3D-сцена рисуется в меньшем разрешении и растягивается, "
@@ -78,7 +89,11 @@ const SettingDef me1_settings[] = {
     {"input.mouse_sensitivity", "Управление", "Чувствительность обзора", "MouseSensitivity (сенсорный обзор и мышь)",
         SF_INPUT, "Engine.PlayerInput", "MouseSensitivity", 0, 0, ST_FLOAT, "6", 1, 20, 0},
     {"port.fps_limit", "Android", "Ограничение FPS", "Меньше нагрев и расход батареи",
+#ifdef __ANDROID__
         SF_PORT, "Port", "FpsLimit", 0, 0, ST_ENUM, "30", 0, 0, FPSCAP},
+#else   /* v1.1 desktop: no cap of the port (the engine itself smooths to 62, bSmoothFrameRate) */
+        SF_PORT, "Port", "FpsLimit", 0, 0, ST_ENUM, "0", 0, 0, FPSCAP},
+#endif
     {"port.show_fps", "Android", "Показывать FPS", "",
         SF_PORT, "Port", "ShowFps", 0, 0, ST_BOOL01, "0", 0, 0, 0},
     {"port.touch_controls", "Android", "Сенсорное управление", "Экранные кнопки и стики",
@@ -342,7 +357,7 @@ int me1cfg_save(ME1Config* c, char* msg, size_t cap) {
     Ini ov; overrides_path(c->docs_dir, up, sizeof up);
     if (mkdirs(up)) { snprintf(msg, cap, "не удалось создать папку для %s", up); return -1; }
     if (reset) ini_init(&ov); else ini_load_file(&ov, up);
-    if (!ov.n) { const char* hdr = "; Mass Effect Android port: overrides applied to Default*.ini when the game reads them"; ini_load_mem(&ov, hdr, strlen(hdr)); }
+    if (!ov.n) { const char* hdr = "; Mass Effect port (me1port): overrides applied to Default*.ini when the game reads them"; ini_load_mem(&ov, hdr, strlen(hdr)); }
     for (int i = 0; i < me1_nsettings; i++) {
         const SettingDef* d = &me1_settings[i]; if (d->file == SF_PORT) continue;
         if (!c->dirty[i] || reset) continue;

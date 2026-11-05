@@ -364,13 +364,26 @@ static void touch_cfg(void) {
     e = getenv("ME1_TOUCH_HOLD"); g_tp_hold = e ? atoi(e) : 2; if (g_tp_hold < 0) g_tp_hold = 0;
 }
 static int32_t g_curx = -1, g_cury = -1;                 /* cursor, screen coordinates (-1: screen center) */
+/* v1.1.5: the Windows cursor as the OS would draw it. UE3 hides it with ShowCursor(FALSE) when it captures the mouse
+ * and shows it again when it releases it; the front ends draw a cursor while it is visible (hle_ui_cursor).
+ * Visible: ShowCursor display count >= 0 (0 at start, as with a mouse installed) and no SetCursor(NULL). */
+static int g_showcount, g_cursor_null;
+static uint32_t g_capture;                                /* SetCapture window */
+static int cursor_visible(void) { return g_showcount >= 0 && !g_cursor_null && !hle_input_mouse_exclusive(); }   /* caller holds g_wmx;
+                                                                   a DirectInput mouse acquired exclusively hides it too */
+/* cursor state changes are rare (mouse capture on/off) and logged: they tell when the game shows the cursor */
+static unsigned g_curlog;
+#define CURLOG(...) do { if (g_curlog < 400 || ui_trace()) { g_curlog++; fprintf(stderr, __VA_ARGS__); } } while (0)
+static int32_t g_lastx = -1, g_lasty = -1;                /* client position of the last pointer event (DirectInput deltas) */
 /* Key state, Windows semantics: g_avk is the physical state (GetAsyncKeyState, set when the front end reports the
  * input), g_vk the message-synchronized one (GetKeyState): it changes when PeekMessage removes the key / button
  * message, so a held-back WM_LBUTTONDOWN still reads as "down" when the window procedure handles it even if the finger
  * was already lifted (UE3 sends IE_Pressed / IE_Released for a button message from GetKeyState). bit 7: down, bit 0: toggled */
 static uint8_t g_vk[256], g_avk[256];
+static uint8_t g_apress[256];   /* v1.1: GetAsyncKeyState bit 0 - pressed since the last call (short taps between polls) */
 static void vk_set(uint8_t* t, unsigned vk, int down) {
     vk &= 255;
+    if (down && t == g_avk) g_apress[vk] = 1;
     if (down) t[vk] = (uint8_t)(0x80 | ((t[vk] & 0x80) ? (t[vk] & 1) : ((t[vk] ^ 1) & 1))); else t[vk] &= 1;
 }
 static void vk_sync(uint32_t msg, uint32_t wp) {   /* a message was removed from the queue (caller holds g_wmx) */
@@ -394,11 +407,24 @@ static uint32_t mk_buttons(void) {   /* MK_* of wParam */
     return (v[1] & 0x80 ? 1u : 0) | (v[2] & 0x80 ? 2u : 0) | ((v[0x10] | v[0xA0] | v[0xA1]) & 0x80 ? 4u : 0) |
            ((v[0x11] | v[0xA2] | v[0xA3]) & 0x80 ? 8u : 0) | (v[4] & 0x80 ? 0x10u : 0);
 }
+/* v1.1.5: Windows sends WM_SETCURSOR (wParam hwnd, lParam HTCLIENT | mouse message << 16) to the window under the
+ * cursor before a mouse message unless the mouse is captured; UE3 answers with SetCursor (arrow / NULL). One pending
+ * at a time (a fast mouse would fill the queue). Caller holds g_wmx. */
+static void mq_setcursor(uint32_t hwnd, uint32_t mmsg) {
+    if (g_capture) return;
+    for (unsigned i = g_mq_tail; i != g_mq_head; i++) if (g_mq[i % MQ].msg == 0x0020) return;
+    mq_push(hwnd, 0x0020, hwnd, (mmsg << 16) | 1u);
+}
 /* pointer at (fx, fy) of a frame of fw x fh pixels (the back buffer), button: 0 move, 1 left down, 2 left up,
  * 3 right down, 4 right up; also feeds the DirectInput mouse (relative motion) */
 static unsigned g_dibtn;   /* DirectInput mouse buttons (bit 0 left, bit 1 right) */
-void hle_ui_pointer(int fx, int fy, int fw, int fh, int button) {
-    static int32_t lastx = -1, lasty = -1; unsigned dibtn;
+static void ui_pointer(int fx, int fy, int fw, int fh, int button, int rel, int rdx, int rdy);
+void hle_ui_pointer(int fx, int fy, int fw, int fh, int button) { ui_pointer(fx, fy, fw, fh, button, 0, 0, 0); }
+/* v1.1 desktop (captured mouse): cursor at (fx, fy) for the window messages, DirectInput gets the real relative motion
+ * (not the clamped cursor difference - mouse look keeps turning at the window edge) */
+void hle_ui_pointer_rel(int fx, int fy, int fw, int fh, int dx, int dy) { ui_pointer(fx, fy, fw, fh, 0, 1, dx, dy); }
+static void ui_pointer(int fx, int fy, int fw, int fh, int button, int rel, int rdx, int rdy) {
+    unsigned dibtn;
     pthread_mutex_lock(&g_wmx);
     Win* w = win_get(g_active);
     int32_t cw = w ? w->w : 0, ch = w ? w->h : 0; unsigned sw, sh; screen_size(&sw, &sh);
@@ -412,12 +438,14 @@ void hle_ui_pointer(int fx, int fy, int fw, int fh, int button) {
     }
     uint32_t lp = ((uint32_t)cy << 16) | ((uint32_t)cx & 0xFFFF);
     if (w) {
+        mq_setcursor(w->hwnd, button >= 1 && button <= 4 ? (button == 1 ? 0x0201u : button == 3 ? 0x0204u : 0x0200u) : 0x0200u);
         mq_push(w->hwnd, 0x0200, mk_buttons(), lp);                                   /* WM_MOUSEMOVE */
         static const uint32_t bm[5] = { 0, 0x0201, 0x0202, 0x0204, 0x0205 };          /* WM_L/RBUTTONDOWN/UP */
         if (button >= 1 && button <= 4) mq_push(w->hwnd, bm[button], mk_buttons(), lp);
     }
-    int dx = lastx < 0 || button == 1 || button == 3 ? 0 : cx - lastx, dy = lasty < 0 || button == 1 || button == 3 ? 0 : cy - lasty;
-    lastx = cx; lasty = cy;
+    int dx = g_lastx < 0 || button == 1 || button == 3 ? 0 : cx - g_lastx, dy = g_lasty < 0 || button == 1 || button == 3 ? 0 : cy - g_lasty;
+    g_lastx = cx; g_lasty = cy;
+    if (rel) { dx = rdx; dy = rdy; }
     dibtn = g_dibtn;
     if (button == 1) dibtn |= 1; else if (button == 2) dibtn &= ~1u; else if (button == 3) dibtn |= 2; else if (button == 4) dibtn &= ~2u;
     unsigned b = g_dibtn = dibtn;
@@ -425,14 +453,64 @@ void hle_ui_pointer(int fx, int fy, int fw, int fh, int button) {
     hle_input_mouse(dx, dy, 0, b);
     if (ui_trace() > 1) fprintf(stderr, "[ui] pointer %d,%d of %dx%d -> client %d,%d button %d\n", fx, fy, fw, fh, cx, cy, button);
 }
-/* on-screen controls (v0.9.5): relative mouse motion of the look area - DirectInput only, the cursor stays where it is */
+/* on-screen controls (v0.9.5): relative mouse motion of the look area - DirectInput only, the cursor stays where it is.
+ * v1.1.5: while the game shows the cursor (menus) the motion also moves it, like a real mouse (touchpad-like look area,
+ * right stick of a pad in the keyboard/mouse profile) */
 void hle_ui_mouse_rel(int dx, int dy) {
-    pthread_mutex_lock(&g_wmx); unsigned b = g_dibtn; pthread_mutex_unlock(&g_wmx);
-    if (dx || dy) hle_input_mouse(dx, dy, 0, b);
+    if (!dx && !dy) return;
+    pthread_mutex_lock(&g_wmx); unsigned b = g_dibtn;
+    Win* w = win_get(g_active);
+    if (w && w->w > 0 && w->h > 0 && cursor_visible()) {
+        unsigned sw, sh; screen_size(&sw, &sh);
+        int32_t cx = (g_curx < 0 ? (int32_t)sw / 2 : g_curx) - w->x + dx, cy = (g_cury < 0 ? (int32_t)sh / 2 : g_cury) - w->y + dy;
+        if (cx < 0) cx = 0; if (cy < 0) cy = 0; if (cx >= w->w) cx = w->w - 1; if (cy >= w->h) cy = w->h - 1;
+        g_curx = w->x + cx; g_cury = w->y + cy; g_lastx = cx; g_lasty = cy;
+        mq_setcursor(w->hwnd, 0x0200);
+        mq_push(w->hwnd, 0x0200, mk_buttons(), ((uint32_t)cy << 16) | ((uint32_t)cx & 0xFFFF));   /* WM_MOUSEMOVE */
+    }
+    pthread_mutex_unlock(&g_wmx);
+    hle_input_mouse(dx, dy, 0, b);
+}
+/* v1.1.5: the cursor for the front ends - client position and size of the active window; returns 1 when it is shown
+ * (Windows rules, see cursor_visible; ME1_CURSOR=0 never, 2 always), 0 hidden, -1 no window yet */
+int hle_ui_cursor(int* x, int* y, int* w, int* h) {
+    static int mode = -1;
+    if (mode < 0) { const char* e = getenv("ME1_CURSOR"); mode = e && *e ? atoi(e) : 1; }
+    pthread_mutex_lock(&g_wmx);
+    Win* wn = win_get(g_active); int r = -1;
+    if (wn && wn->w > 0 && wn->h > 0) {
+        unsigned sw, sh; screen_size(&sw, &sh);
+        *x = (g_curx < 0 ? (int32_t)sw / 2 : g_curx) - wn->x; *y = (g_cury < 0 ? (int32_t)sh / 2 : g_cury) - wn->y; *w = wn->w; *h = wn->h;
+        r = mode == 0 ? 0 : mode == 2 ? 1 : cursor_visible();
+        static int last = -1;
+        int v = cursor_visible();
+        if (v != last) {
+            last = v;
+            CURLOG("[ui] cursor %s (ShowCursor %d, SetCursor %s, DirectInput mouse %s, ME1_CURSOR %d, frame %u)\n", v ? "shown" : "hidden",
+                   g_showcount, g_cursor_null ? "NULL" : "arrow", hle_input_mouse_exclusive() ? "exclusive" : "non-exclusive", mode, hle_d3d9_frames());
+        }
+    }
+    pthread_mutex_unlock(&g_wmx);
+    return r;
 }
 /* on-screen fire / aim buttons: button as in hle_ui_pointer (1 left down, 2 left up, 3 right down, 4 right up) at the
  * current cursor position */
 void hle_ui_mouse_button(int button) {
+    if (button == 5 || button == 6) {   /* v1.1: middle button down / up */
+        pthread_mutex_lock(&g_wmx);
+        Win* w = win_get(g_active);
+        unsigned sw, sh; screen_size(&sw, &sh);
+        int32_t sx = g_curx < 0 ? (int32_t)sw / 2 : g_curx, sy = g_cury < 0 ? (int32_t)sh / 2 : g_cury;
+        int32_t cx = sx - (w ? w->x : 0), cy = sy - (w ? w->y : 0);
+        vk_set(g_avk, 4, button == 5);
+        if (w) mq_push(w->hwnd, button == 5 ? 0x0207u : 0x0208u, mk_buttons(), ((uint32_t)cy << 16) | ((uint32_t)cx & 0xFFFF));
+        else vk_set(g_vk, 4, button == 5);
+        if (button == 5) g_dibtn |= 4u; else g_dibtn &= ~4u;
+        unsigned b = g_dibtn;
+        pthread_mutex_unlock(&g_wmx);
+        hle_input_mouse(0, 0, 0, b);
+        return;
+    }
     if (button < 1 || button > 4) return;
     pthread_mutex_lock(&g_wmx);
     Win* w = win_get(g_active);
@@ -449,6 +527,35 @@ void hle_ui_mouse_button(int button) {
     unsigned b = g_dibtn;
     pthread_mutex_unlock(&g_wmx);
     hle_input_mouse(0, 0, 0, b);
+}
+/* v1.1 desktop: mouse wheel, delta in WHEEL_DELTA units (120 per notch, > 0 = away from the user) */
+void hle_ui_wheel(int delta) {
+    if (!delta) return;
+    pthread_mutex_lock(&g_wmx);
+    Win* w = win_get(g_active);
+    unsigned sw, sh; screen_size(&sw, &sh);
+    int32_t sx = g_curx < 0 ? (int32_t)sw / 2 : g_curx, sy = g_cury < 0 ? (int32_t)sh / 2 : g_cury;
+    if (w) mq_push(w->hwnd, 0x020A /* WM_MOUSEWHEEL */, ((uint32_t)(delta & 0xFFFF) << 16) | mk_buttons(), ((uint32_t)sy << 16) | ((uint32_t)sx & 0xFFFF));
+    unsigned b = g_dibtn;
+    pthread_mutex_unlock(&g_wmx);
+    hle_input_mouse(0, 0, delta, b);
+}
+/* v1.1 desktop: the user closed the window -> WM_CLOSE to the game window (UE3 then asks the engine to exit);
+ * returns 0 when there is no window to tell (the front end then stops the process itself) */
+int hle_ui_close(void) {
+    pthread_mutex_lock(&g_wmx);
+    Win* w = win_get(g_active);
+    if (w) mq_push(w->hwnd, 0x0010 /* WM_CLOSE */, 0, 0);
+    pthread_mutex_unlock(&g_wmx);
+    return w != NULL;
+}
+/* v1.1 desktop: a typed character (text input, already composed by the window system) -> WM_CHAR */
+void hle_ui_char(int ch) {
+    if (ch <= 0 || ch >= 0x10000) return;
+    pthread_mutex_lock(&g_wmx);
+    Win* w = win_get(g_active);
+    if (w) mq_push(w->hwnd, 0x0102, (uint32_t)ch, 1u);
+    pthread_mutex_unlock(&g_wmx);
 }
 /* key: Windows virtual key + DirectInput scan code (0: none), ch: WM_CHAR character (0: none) */
 void hle_ui_key(int vk, int dik, int down, int ch) {
@@ -474,15 +581,23 @@ static void u_IsIconic(CPU* c) { RET(0); }
 static void u_RegisterWindowMessageW(CPU* c) { static uint32_t m = 0xC200; RET(m++); }
 static void u_LoadRes(CPU* c) { static uint32_t h = 0x00C10000; RET(h += 0x10); }
 static void u_GetSystemMetrics(CPU* c) {
-    unsigned w, h; screen_size(&w, &h);
-    switch (ARG(0)) { case 0: case 16: case 78: RET(w); return; case 1: case 17: case 79: RET(h); return;
-                      case 80: RET(1); return; default: RET(0); }
+    unsigned w, h, i = ARG(0), r; screen_size(&w, &h);
+    switch (i) { case 0: case 16: case 78: r = w; break; case 1: case 17: case 79: r = h; break;
+                 case 80: r = 1; break;                                      /* SM_CMONITORS */
+                 case 19: case 75: r = 1; break;                             /* v1.1.5: SM_MOUSEPRESENT, SM_MOUSEWHEELPRESENT */
+                 case 43: r = 3; break;                                      /* SM_CMOUSEBUTTONS */
+                 case 13: case 14: r = 32; break;                            /* SM_CXCURSOR, SM_CYCURSOR */
+                 default: r = 0; }
+    static uint8_t seen[128];
+    if (i < 128 && !seen[i]) { seen[i] = 1; fprintf(stderr, "[ui] GetSystemMetrics(%u) = %u\n", i, r); }
+    RET(r);
 }
 static void u_GetDesktopWindow(CPU* c) { RET(HWND_DESKTOP_); }
 static unsigned g_n_curpos, g_n_clicks, g_n_moves; static int32_t g_click_x = -1, g_click_y = -1; static uint32_t g_click_lag;
 void hle_ui_brief(char* o, size_t n) {   /* [hb]: how the engine reads the pointer (diagnoses touch problems) */
     pthread_mutex_lock(&g_wmx);
-    int k = snprintf(o, n, "ui: %u GetCursorPos, %u moves, %u clicks (last at %d,%d, +%u frames)", g_n_curpos, g_n_moves, g_n_clicks, g_click_x, g_click_y, g_click_lag);
+    int k = snprintf(o, n, "ui: %u GetCursorPos, %u moves, %u clicks (last at %d,%d, +%u frames), cursor %s (ShowCursor %d)", g_n_curpos, g_n_moves,
+                     g_n_clicks, g_click_x, g_click_y, g_click_lag, cursor_visible() ? "shown" : "hidden", g_showcount);
     pthread_mutex_unlock(&g_wmx);
     if (k > 0 && (size_t)k + 3 < n) { o[k] = ','; o[k + 1] = ' '; hle_xinput_brief(o + k + 2, n - (size_t)k - 2); }
 }
@@ -492,8 +607,37 @@ static void u_GetCursorPos(CPU* c) {
     pthread_mutex_lock(&g_wmx); int32_t x = g_curx < 0 ? (int32_t)w / 2 : g_curx, y = g_cury < 0 ? (int32_t)h / 2 : g_cury; pthread_mutex_unlock(&g_wmx);
     wr32(ARG(0), (uint32_t)x); wr32(ARG(0) + 4, (uint32_t)y); RET(1);
 }
-static void u_SetCursorPos(CPU* c) { pthread_mutex_lock(&g_wmx); g_curx = (int32_t)ARG(0); g_cury = (int32_t)ARG(1); pthread_mutex_unlock(&g_wmx); RET(1); }
-static void u_ShowCursor(CPU* c) { static int n; n += ARG(0) ? 1 : -1; RET(n); }
+static void u_SetCursorPos(CPU* c) {
+    pthread_mutex_lock(&g_wmx); g_curx = (int32_t)ARG(0); g_cury = (int32_t)ARG(1); pthread_mutex_unlock(&g_wmx);
+    CURLOG("[ui] SetCursorPos(%d, %d) (frame %u)\n", (int)ARG(0), (int)ARG(1), hle_d3d9_frames());
+    RET(1);
+}
+static void u_ShowCursor(CPU* c) {
+    pthread_mutex_lock(&g_wmx); int n = g_showcount += ARG(0) ? 1 : -1; pthread_mutex_unlock(&g_wmx);
+    CURLOG("[ui] ShowCursor(%s) -> %d (frame %u)\n", ARG(0) ? "TRUE" : "FALSE", n, hle_d3d9_frames());
+    RET((uint32_t)n);
+}
+static void u_SetCursor(CPU* c) {
+    pthread_mutex_lock(&g_wmx); int was = g_cursor_null; g_cursor_null = ARG(0) == 0; pthread_mutex_unlock(&g_wmx);
+    if (was != (ARG(0) == 0)) CURLOG("[ui] SetCursor(%08x) (frame %u)\n", ARG(0), hle_d3d9_frames());
+    RET(was ? 0 : 0x00C10010u);
+}
+static void u_SetCapture(CPU* c) {
+    pthread_mutex_lock(&g_wmx); uint32_t o = g_capture; g_capture = ARG(0); pthread_mutex_unlock(&g_wmx);
+    CURLOG("[ui] SetCapture(%08x) (frame %u)\n", ARG(0), hle_d3d9_frames());
+    RET(o);
+}
+static void u_ReleaseCapture(CPU* c) {
+    pthread_mutex_lock(&g_wmx); g_capture = 0; pthread_mutex_unlock(&g_wmx);
+    CURLOG("[ui] ReleaseCapture (frame %u)\n", hle_d3d9_frames());
+    RET(1);
+}
+static void u_GetCapture(CPU* c) { RET(g_capture); }
+static void u_ClipCursor(CPU* c) {   /* called every frame: only changes are logged */
+    static int last = -1; int on = ARG(0) != 0;
+    if (on != last) { last = on; CURLOG("[ui] ClipCursor(%s) (frame %u)\n", on ? "rect" : "NULL", hle_d3d9_frames()); }
+    RET(1);
+}
 static int msg_match(const QMsg* q, uint32_t hwnd, uint32_t lo, uint32_t hi) {
     if (hwnd && hwnd != 0xFFFFFFFFu && q->hwnd != hwnd) return 0;
     return (!lo && !hi) || (q->msg >= lo && q->msg <= hi);
@@ -558,8 +702,9 @@ static void u_GetAsyncKeyState(CPU* c) {
     uint32_t vk = ARG(0) & 255; pthread_mutex_lock(&g_wmx);
     uint8_t v = g_avk[vk];
     if (vk == 0x10 || vk == 0x11 || vk == 0x12) v |= g_avk[0xA0 + 2 * (vk - 0x10)] | g_avk[0xA1 + 2 * (vk - 0x10)];
+    unsigned tap = g_apress[vk]; g_apress[vk] = 0;
     pthread_mutex_unlock(&g_wmx);
-    RET(v & 0x80 ? 0x8000u : 0);
+    RET((v & 0x80 ? 0x8000u : 0) | tap);
 }
 static void u_GetClipCursor(CPU* c) {
     unsigned w, h; screen_size(&w, &h); uint32_t r = ARG(0);
@@ -714,8 +859,8 @@ const HleDef hle_exe_defs[] = {
     U("LoadIconW", 2, u_LoadRes) U("LoadIconA", 2, u_LoadRes) U("LoadCursorW", 2, u_LoadRes) U("LoadImageW", 6, u_LoadRes)
     U("GetSystemMetrics", 1, u_GetSystemMetrics) U("GetDesktopWindow", 0, u_GetDesktopWindow) U("GetForegroundWindow", 0, u_GetActive)
     U("GetActiveWindow", 0, u_GetActive) U("GetFocus", 0, u_GetActive) U("GetTopWindow", 1, u_GetTopWindow) U("EnumWindows", 2, r1)
-    U("GetCursorPos", 1, u_GetCursorPos) U("SetCursorPos", 2, u_SetCursorPos) U("ClipCursor", 1, r1) U("GetClipCursor", 1, u_GetClipCursor)
-    U("ShowCursor", 1, u_ShowCursor) U("SetCursor", 1, r0) U("ScreenToClient", 2, u_ScreenToClient) U("ClientToScreen", 2, u_ClientToScreen)
+    U("GetCursorPos", 1, u_GetCursorPos) U("SetCursorPos", 2, u_SetCursorPos) U("ClipCursor", 1, u_ClipCursor) U("GetClipCursor", 1, u_GetClipCursor)
+    U("ShowCursor", 1, u_ShowCursor) U("SetCursor", 1, u_SetCursor) U("ScreenToClient", 2, u_ScreenToClient) U("ClientToScreen", 2, u_ClientToScreen)
     U("MapWindowPoints", 4, r0) U("GetClientRect", 2, u_GetRect) U("GetWindowRect", 2, u_GetWindowRect) U("AdjustWindowRect", 3, r1)
     U("PeekMessageW", 5, u_PeekMessage) U("PeekMessageA", 5, u_PeekMessage) U("GetMessageW", 4, u_GetMessageW)
     U("TranslateMessage", 1, r0)
@@ -729,7 +874,7 @@ const HleDef hle_exe_defs[] = {
     U("GetWindowLongW", 2, u_GetWindowLong) U("GetWindowLongA", 2, u_GetWindowLong) U("IsWindow", 1, u_IsWindow)
     U("IsWindowVisible", 1, u_IsWindowVisible) U("GetParent", 1, u_GetParent)
     U("SetWindowTextW", 2, u_SetWindowTextW) U("SetForegroundWindow", 1, u_SetForegroundWindow) U("SetActiveWindow", 1, u_SetActiveWindow)
-    U("SetFocus", 1, u_SetFocus) U("SetCapture", 1, r0) U("ReleaseCapture", 0, r1) U("IsIconic", 1, u_IsIconic) U("InvalidateRect", 3, r1) U("RedrawWindow", 4, r1)
+    U("SetFocus", 1, u_SetFocus) U("SetCapture", 1, u_SetCapture) U("ReleaseCapture", 0, u_ReleaseCapture) U("GetCapture", 0, u_GetCapture) U("IsIconic", 1, u_IsIconic) U("InvalidateRect", 3, r1) U("RedrawWindow", 4, r1)
     U("BeginPaint", 2, r0) U("EndPaint", 2, r1) U("DrawStateW", 10, r1) U("GetWindowThreadProcessId", 2, u_GetWindowThreadProcessId)
     U("DefWindowProcW", 4, r0) U("DefWindowProcA", 4, r0) U("DialogBoxParamW", 5, u_DialogBoxParamW) U("EndDialog", 2, r1)
     U("GetDlgItem", 2, r0) U("SetDlgItemTextW", 3, r1) U("RegisterHotKey", 4, r1) U("UnregisterHotKey", 2, r1)

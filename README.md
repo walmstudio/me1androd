@@ -1,12 +1,12 @@
-# me1port — Mass Effect (2007) на Android
+# me1port — Mass Effect (2007) на Android и Linux
 
-**v1.0** · arm64-v8a · Android 10+ (API 29) · OpenGL ES 3 / Vulkan 1.0
+**v1.1.5** · Android 10+ (arm64-v8a) · Linux x86-64 / aarch64 (X11, Wayland) · OpenGL ES 3 / Vulkan 1.0
 
-Это порт оригинальной PC-версии Mass Effect на Android через **статическую перекомпиляцию**. Код `MassEffect.exe` и его DLL
+Это порт оригинальной PC-версии Mass Effect на Android и Linux через **статическую перекомпиляцию**. Код `MassEffect.exe` и его DLL
 (x86-32) переводится в C и собирается под ARM64. Вокруг него работает рантайм, который заменяет Windows, Direct3D 9 и звук.
 Эмулятора x86 и Wine здесь нет.
 
-> *English:* static recompilation port of the original PC Mass Effect (2007) to Android/ARM64. x86-32 PE → C → arm64,
+> *English:* static recompilation port of the original PC Mass Effect (2007) to Android/ARM64 and desktop Linux (x86-64/aarch64, SDL2). x86-32 PE → C → arm64,
 > plus an HLE runtime (Win32, Direct3D 9 → GLES 3 / Vulkan, own OpenAL 1.1 → AAudio). No game data is included: you need your own
 > copy of the PC game. The launcher UI is available in RU, EN, DE, FR, IT, ES, PL, CS and HU.
 
@@ -16,6 +16,7 @@
 
 - [Как это устроено](#как-это-устроено)
 - [Для игрока](#для-игрока)
+- [Linux](#linux)
 - [Структура репозитория](#структура-репозитория)
 - [Сборка](#сборка)
 - [Тесты](#тесты)
@@ -37,14 +38,16 @@
         │              Direct3D 9 → OpenGL ES 3 (шейдеры SM3 → GLSL) или собственный рендерер D3D9 → Vulkan,
         │              свой программный OpenAL 1.1 (для ISACT) с выводом в AAudio, ввод, моды (VFS-оверлей), PhoneModify
         ├── settings/  настройки движка и порта (замена MassEffectConfig.exe), утилита me1cfg
-        └── android/   лаунчер (Java), JNI, GLSL → SPIR-V (glslang), необязательно Mesa Zink и libadrenotools
+        ├── android/   лаунчер (Java), JNI, GLSL → SPIR-V (glslang), необязательно Mesa Zink и libadrenotools
+        └── linux/     фронтенд на SDL2 (окно X11/Wayland, ввод, геймпады, звук, экран загрузки) → me1-linux;
+                       лаунчер me1-launcher (настройки, моды, запуск)
 ```
 
 - Игра запускается в отдельном процессе (`:game`), на весь экран. Лаунчер выбирает настройки, драйвер, моды и управление.
 - Шейдеры D3D9 компилируются перекомпилированным D3DX (HLSL), транслируются в GLSL или SPIR-V и кэшируются.
   Поэтому первый запуск занимает несколько минут.
-- Графика: системный OpenGL ES (по умолчанию), системный Vulkan через собственный рендерер, Mesa Zink или
-  пользовательские Vulkan-драйверы (Turnip, сборки Qualcomm и Mali в формате AdrenoTools).
+- Графика: системный OpenGL ES (по умолчанию на Android), системный Vulkan через собственный рендерер (по умолчанию
+  на ПК с видеокартой), Mesa Zink или пользовательские Vulkan-драйверы (Turnip, сборки Qualcomm и Mali в формате AdrenoTools).
 
 ---
 
@@ -78,13 +81,36 @@
   масштаб 3D-сцены, ограничение FPS, «Упрощённый расчёт» для слабых GPU).
 - **Графический драйвер**: системный GLES или Vulkan, Mesa Zink, свои драйверы из `MassEffect/GameExDriver/`.
 - **Управление**: сенсорное (стик, кнопки, камера свайпом, настраиваемая раскладка), USB/Bluetooth-клавиатура и мышь,
-  геймпад XInput (нужен мод ME1Controller).
+  геймпад XInput (нужен мод ME1Controller). С v1.1.3 есть раскладка «как в порте Skyrim»: экранный Xbox-геймпад, стик
+  на всю левую половину экрана и кнопка клавиатуры телефона. Работает и с модом, и без него (тогда как клавиатура и мышь).
 - **Моды**: `MassEffect/Mods/<имя>/` подключаются виртуально, оригинальные файлы не меняются. DLC подхватываются из папки игры.
 - **PhoneModify**: точечное снижение нагрузки (лимиты draw call, ключи движка, патчи) и генератор готовых профилей.
 - **Диагностика**: «Проверить» (что увидит игра), лог последнего запуска, тест без окна, «Доп. переменные» `ME1_*`.
 
 Подробно об этом рассказано в [справочнике](docs/GUIDE.md): моды, драйверы, PhoneModify, все переменные, рецепты для
 конкретных GPU, разбор лога и FAQ.
+
+---
+
+## Linux
+
+С v1.1 тот же рантайм и те же перекомпилированные модули собираются в обычную программу для Linux: **`me1-linux`**
+(x86-64 или aarch64, X11 или Wayland, Vulkan или OpenGL ES 3 через EGL). Вместо JNI работает фронтенд на SDL2
+(`linux/me1_linux.c`) с экраном загрузки, а вместо Android-лаунчера — **`me1-launcher`** с теми же разделами: папка
+игры, графика и пресеты, звук, управление, моды, переменные окружения, PhoneModify, проверка и журналы. Wine, DXVK и
+эмулятор не нужны.
+
+```sh
+make linux-demo                                  # me1-demo: окно, ввод, звук и рендереры без файлов игры
+# перекомпиляция своих файлов игры: раздел «Сборка», шаг 1
+make -j$(nproc) linux                            # build/linux/me1-linux, me1-launcher, me1cfg, libme1spv.so
+linux/install.sh                                 # установка в ~/.local и ярлык «Mass Effect» в меню
+me1-launcher                                     # или ярлык; me1-launcher --play — сразу в игру
+```
+
+![Linux: лаунчер](docs/img/linux_launcher.jpg)
+
+Подробно о требованиях, пакетах, параметрах и ограничениях: [linux/README.md](linux/README.md).
 
 ---
 
@@ -104,9 +130,12 @@
 | `android/i18n/` | исходники переводов `tr/<код>.txt` и `build_tr.py` |
 | `android/test/` | хостовые JVM-тесты JNI, поиска игры и драйверов |
 | `android/build_apk.sh` | сборка APK без Gradle |
+| `linux/` | порт на Linux: `me1_linux.c` (фронтенд SDL2, экран загрузки), `launcher.c` (лаунчер), `ui.c` (интерфейс), `i18n.c` + `i18n/` (переводы), `gpuprobe.c`, `assets/` (шрифты, иконка), `demo_d3d9.c` (проверка без игры), `install.sh`, `.desktop`, `README.md` |
+| `runtime/me1_platform.h` | описание окна платформы (Android / X11 / Wayland) для рендереров |
 | `tests/` | генераторы тестовых DLL (потоки, исключения), нативные тесты |
 | `docs/GUIDE.md` | справочник пользователя |
 | `docs/ARCHITECTURE.md`, `docs/ARCHITECTURE.pdf` | как устроен исходный код: кратко и подробно |
+| `docs/img/` | скриншоты |
 | `PERF.md` | аудит производительности и загрузки |
 | `CHANGES_v*.md` | изменения по версиям |
 
@@ -120,7 +149,7 @@
 
 | Что | Версия / примечание |
 |---|---|
-| Linux x86-64, `make`, `gcc` | хостовые тесты и утилиты |
+| Linux x86-64, `make`, `gcc` | хостовые тесты и утилиты; для порта на Linux ещё SDL2 (см. [linux/README.md](linux/README.md)) |
 | Python 3 + `capstone` | перекомпилятор; для `difftest` ещё `unicorn` и `qemu-aarch64-static` |
 | Android NDK | r27c (`NDK=/path/android-ndk-r27c`) |
 | Android SDK | build-tools 30.0.3, platform android-29 (`ANDROID_SDK`, `ANDROID_BT`, `ANDROID_JAR`) |
@@ -180,6 +209,7 @@ make difftest-arm64        # то же для arm64 под qemu-aarch64-static
 make test-mt test-eh       # потоки/синхронизация и SEH/C++-исключения на тестовых DLL
 make test-vorbis test-bink # перекомпилированные декодеры звука и видео
 make build/test_d3d9 build/test_fs build/test_mod build/test_al   # HLE D3D9, файловый слой, моды, звук
+make linux-demo && ME1_DEMO_SECONDS=10 build/linux/me1-demo --game /tmp/me1demo  # Linux-фронтенд и рендереры без игры (нужна пустая папка Binaries/)
 ```
 
 `android/test/*.java` — хостовые JVM-тесты моста JNI (`HostTest`), поиска игры (`LocatorTest`) и пакетов драйверов
@@ -200,6 +230,8 @@ make build/test_d3d9 build/test_fs build/test_mod build/test_al   # HLE D3D9, ф
   совпадают спецификаторы `%s`/`%.1f`.
 - Если строки нет в переводе, показывается английский вариант, а если нет и его — русский оригинал. Описания
   «Доп. переменных» и комментарии в `phone_tune.txt` переведены только на английский.
+- Linux-лаунчер берёт те же `android/assets/i18n/*.json` (вшиты в бинарник) и добавляет свои строки из
+  `linux/i18n/<код>.json` (`{"русский оригинал": "перевод"}`): английский — полностью, остальные языки — основные пункты.
 
 ---
 
@@ -208,7 +240,8 @@ make build/test_d3d9 build/test_fs build/test_mod build/test_al   # HLE D3D9, ф
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): как всё работает под капотом, кратко. Подробная версия: [docs/ARCHITECTURE.pdf](docs/ARCHITECTURE.pdf) (исходник `docs/ARCHITECTURE_full.md`).
 - [docs/GUIDE.md](docs/GUIDE.md): справочник (моды, драйверы GPU, PhoneModify, настройки, переменные `ME1_*`, рецепты, лог, FAQ).
 - [PERF.md](PERF.md): аудит производительности и загрузки с замерами.
-- [CHANGES_v1.0.md](CHANGES_v1.0.md), [CHANGES_v0.10.13.md](CHANGES_v0.10.13.md): изменения.
+- [linux/README.md](linux/README.md): порт на Linux.
+- [CHANGES_v1.1.md](CHANGES_v1.1.md), [CHANGES_v1.0.md](CHANGES_v1.0.md), [CHANGES_v0.10.13.md](CHANGES_v0.10.13.md): изменения.
 
 ---
 
@@ -219,5 +252,7 @@ make build/test_d3d9 build/test_fs build/test_mod build/test_al   # HLE D3D9, ф
   легально купленная копия PC-версии. Не публикуйте `out/`, `build/` и APK с `libme1game.so`: они содержат код,
   полученный из бинарников игры.
 - `d3dx9_31.dll` (DirectX) берётся из вашей установки и кладётся в APK как ресурс.
+- Раскладка «как в порте Skyrim» написана заново по описанию и скриншотам того порта. Его код не копировался: у
+  репозитория нет лицензии.
 - Сторонние компоненты: capstone (BSD), glslang (BSD/Apache-2.0), Mesa (MIT), libadrenotools (BSD-2-Clause). Их лицензии действуют
   на соответствующие части.

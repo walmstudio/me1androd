@@ -358,6 +358,28 @@ int main(int argc, char** argv) {
     quad(-1, 1, 0, -1, 0.1f, 0xFF0000FFu); grab(bb); quads(0xFF, 0x00FF00, 0xFF, 0x00FF00, "depth: nearer quad drawn");
     rs(23, 8); rs(14, 0); quad(0, 1, 1, -1, 0.9f, 0xFFFFFFFFu); rs(23, 4); quad(-1, 1, 1, -1, 0.35f, 0xFFFF00FFu); grab(bb);
     quads(0xFF, 0xFFFFFF, 0xFF, 0xFFFFFF, "depth: ZWRITE off keeps depth");
+    {   /* v1.1.3: occlusion queries - depth is 0.1 (left) / 0.3 (right); quads drawn without color/depth writes */
+        CHECK(com(dev, 118, 2, 9u, out) == 0 && rd32(out), "CreateQuery(OCCLUSION)"); uint32_t q = rd32(out), qr = gbuf(4);
+        const char* vk = getenv("ME1_RENDERER"); int precise = vk && !strcmp(vk, "vulkan");
+        struct { float x0, x1, z; int vis; uint32_t px; const char* what; } T[] = {
+            { -1, 1, 0.6f, 0, 0, "behind everything: 0 samples" }, { -1, 1, 0.2f, 1, 2048, "between: the right half passes" },
+            { -1, 1, 0.05f, 1, 4096, "in front: all samples" }, { 0, 0, 0, 0, 0, "no draws: 0" } };
+        rs(168, 0); rs(14, 0);
+        for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) {
+            CHECK(com(q, 6, 1, 2u) == 0, "Issue(BEGIN)");
+            if (T[i].x1 > T[i].x0) quad(T[i].x0, 1, T[i].x1, -1, T[i].z, 0xFFFFFFFFu);
+            CHECK(com(q, 6, 1, 1u) == 0, "Issue(END)");
+            uint32_t hr = 1; int spins = 0; wr32(qr, 0xDEADBEEFu);
+            while ((hr = com(q, 7, 3, qr, 4u, 1u)) == 1 && spins < 100000) spins++;
+            uint32_t v = rd32(qr);
+            fprintf(stderr, "occlusion: %s -> %u after %d polls\n", T[i].what, v, spins);
+            CHECK(hr == 0, "occlusion GetData %s -> %08x after %d polls", T[i].what, hr, spins);
+            if (precise) CHECK(v == T[i].px, "occlusion %s: %u samples (want %u)", T[i].what, v, T[i].px);
+            else CHECK((v != 0) == T[i].vis, "occlusion %s: %u (want %s)", T[i].what, v, T[i].vis ? "visible" : "0");
+        }
+        rs(168, 15); rs(14, 1);
+        com(q, 2, 0);   /* Release */
+    }
     rs(7, 0); rs(14, 1);
     /* 7. alpha test, blending, color write mask, scissor, viewport */
     rs(15, 1); rs(25, 5); rs(24, 0x80);

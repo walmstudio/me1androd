@@ -280,7 +280,7 @@ void hle_hb_stacks(const char* why, CPU* me) {
     pthread_mutex_unlock(&g_hbmx);
 }
 
-/* ---- memory watch: ME1_WATCH=<hex>[*][,<hex>[*]...] (default 12283ce0* when PhysXCore.dll is loaded; 0 = off)
+/* ---- memory watch: ME1_WATCH=<hex>[*][,<hex>[*]...] (v1.1: off by default; ME1_WATCH=1 = 12283ce0* when PhysXCore.dll is loaded)
  * <hex>   : a dword is polled (every 250 us); a change prints the old/new value and every guest thread's stack.
  * <hex>*  : the dword is a pointer; the first dword of the object it points to (its vtable) is polled as well.
  * 12283ce0 is PhysXCore's global user allocator pointer (the FNxAllocator object of the engine): v0.8 crashed calling
@@ -321,8 +321,9 @@ static void* watch_main(void* p) {
 }
 void hle_watch_start(void) {
     const char* e = getenv("ME1_WATCH"); char def[32] = "";
-    if (!e) { Module* m = rt_module_at(0x12283ce0u); if (m && !strcasecmp(m->name, "PhysXCore.dll")) snprintf(def, sizeof def, "12283ce0*"); e = def; }
-    if (!*e || !strcmp(e, "0")) return;
+    if (!e || !*e || !strcmp(e, "0")) return;   /* v1.1: off by default (the v0.8 PhysX allocator crash is long fixed; the poll cost 4000 wake-ups/s) */
+    if (!strcmp(e, "1")) { Module* m = rt_module_at(0x12283ce0u); if (m && !strcasecmp(m->name, "PhysXCore.dll")) snprintf(def, sizeof def, "12283ce0*"); e = def; }
+    if (!*e) return;
     for (const char* q = e; *q && g_nw < 8;) {
         char* end; unsigned long a = strtoul(q, &end, 16); if (end == q) break;
         Watch* w = &g_w[g_nw++]; w->addr = (uint32_t)a; w->deref = *end == '*'; if (*end == '*') end++;

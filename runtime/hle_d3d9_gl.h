@@ -47,6 +47,11 @@
 #include <math.h>
 #include <errno.h>
 #include "sm3_glsl.h"
+#include "me1_platform.h"
+/* v1.1 (Linux port): window system of the desktop front end (me1_platform.h); 0 = none (Android, tests) */
+static int g_ws_kind; static void* g_ws_dpy; static unsigned long g_ws_visual;
+void me1_platform_set(int kind, void* display, unsigned long x11_visual) { g_ws_kind = display ? kind : 0; g_ws_dpy = display; g_ws_visual = x11_visual; }
+int me1_platform_kind(void) { return g_ws_kind; }
 
 #define XS3TC_DXT1 0x83F1
 #define XS3TC_DXT3 0x83F2
@@ -99,7 +104,9 @@
     X(PFNGLWAITSYNCPROC, glWaitSync) X(PFNGLCLIENTWAITSYNCPROC, glClientWaitSync) X(PFNGLDELETESYNCPROC, glDeleteSync) \
     X(PFNGLINVALIDATEFRAMEBUFFERPROC, glInvalidateFramebuffer) X(PFNGLFLUSHPROC, glFlush) X(PFNGLFINISHPROC, glFinish)
 #define GLF_OPT(X) X(PFNGLCOLORMASKIPROC, glColorMaski) X(PFNGLGETPROGRAMBINARYPROC, glGetProgramBinary) \
-    X(PFNGLPROGRAMBINARYPROC, glProgramBinary) X(PFNGLPROGRAMPARAMETERIPROC, glProgramParameteri)
+    X(PFNGLPROGRAMBINARYPROC, glProgramBinary) X(PFNGLPROGRAMPARAMETERIPROC, glProgramParameteri) \
+    X(PFNGLGENQUERIESPROC, glGenQueries) X(PFNGLDELETEQUERIESPROC, glDeleteQueries) X(PFNGLBEGINQUERYPROC, glBeginQuery) \
+    X(PFNGLENDQUERYPROC, glEndQuery) X(PFNGLGETQUERYOBJECTUIVPROC, glGetQueryObjectuiv)
 #define GL_DECL(T, n) static T n;
 GLF(GL_DECL) GLF_OPT(GL_DECL)
 #define EGLF(X) X(eglGetProcAddress) X(eglGetDisplay) X(eglInitialize) X(eglBindAPI) X(eglChooseConfig) X(eglGetConfigAttrib) \
@@ -395,7 +402,16 @@ static GlCtx* egl_open(void) {
     const char* cext = p_eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
     g_dpy = EGL_NO_DISPLAY;
 #ifndef __ANDROID__
-    if (cext && has_ext(cext, "EGL_MESA_platform_surfaceless")) {
+    if (g_ws_kind && cext && has_ext(cext, "EGL_EXT_platform_base")) {   /* v1.1: the desktop window's display (X11 / Wayland) */
+        typedef EGLDisplay (*GPD)(EGLenum, void*, const EGLint*);
+        GPD gpd = (GPD)p_eglGetProcAddress("eglGetPlatformDisplayEXT");
+        const char* need = g_ws_kind == ME1_WS_X11 ? "EGL_EXT_platform_x11" : "EGL_EXT_platform_wayland";
+        if (gpd && (has_ext(cext, need) || has_ext(cext, g_ws_kind == ME1_WS_X11 ? "EGL_KHR_platform_x11" : "EGL_KHR_platform_wayland")))
+            g_dpy = gpd(g_ws_kind == ME1_WS_X11 ? 0x31D5 /* EGL_PLATFORM_X11_KHR */ : 0x31D8 /* EGL_PLATFORM_WAYLAND_KHR */, g_ws_dpy, NULL);
+        if (g_dpy == EGL_NO_DISPLAY) { glog("no EGL display for the %s window (%s missing?): no window output\n", g_ws_kind == ME1_WS_X11 ? "X11" : "Wayland", need); g_ws_kind = 0; }
+        else glog("EGL on the %s display of the window\n", g_ws_kind == ME1_WS_X11 ? "X11" : "Wayland");
+    }
+    if (g_dpy == EGL_NO_DISPLAY && cext && has_ext(cext, "EGL_MESA_platform_surfaceless")) {
 #else
     if (g_zink && cext && has_ext(cext, "EGL_MESA_platform_surfaceless")) {
 #endif
@@ -413,7 +429,11 @@ static GlCtx* egl_open(void) {
                              EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_NONE };
     EGLConfig cf[64];
     g_winbit = 1;
-    if (!p_eglChooseConfig(g_dpy, want, cf, 64, &n) || n < 1) {
+    if ((!p_eglChooseConfig(g_dpy, want, cf, 64, &n) || n < 1) && g_ws_kind && g_surfless) {   /* v1.1: Wayland has no pbuffers */
+        want[3] = EGL_WINDOW_BIT; if (!p_eglChooseConfig(g_dpy, want, cf, 64, &n)) n = 0;
+        want[3] = EGL_WINDOW_BIT | EGL_PBUFFER_BIT;
+    }
+    if (n < 1) {
         g_winbit = 0; want[3] = EGL_PBUFFER_BIT;
         if (!p_eglChooseConfig(g_dpy, want, cf, 64, &n) || n < 1) {   /* surfaceless-only displays */
             want[3] = 0;
@@ -421,7 +441,15 @@ static GlCtx* egl_open(void) {
         }
     }
     g_cfg = cf[0];
-    for (int i = 0; i < n; i++) {   /* prefer exactly RGB(A)888(8) without depth: we render into FBOs */
+    int vmatch = 0;
+#ifndef __ANDROID__
+    if (g_ws_kind == ME1_WS_X11 && g_ws_visual && g_winbit)   /* v1.1: a config of the window's X visual (else BAD_MATCH) */
+        for (int i = 0; i < n && !vmatch; i++) {
+            EGLint vid = 0, dz = 0; p_eglGetConfigAttrib(g_dpy, cf[i], EGL_NATIVE_VISUAL_ID, &vid); p_eglGetConfigAttrib(g_dpy, cf[i], EGL_DEPTH_SIZE, &dz);
+            if ((unsigned long)vid == g_ws_visual && dz == 0) { g_cfg = cf[i]; vmatch = 1; }
+        }
+#endif
+    for (int i = 0; i < n && !vmatch; i++) {   /* prefer exactly RGB(A)888(8) without depth: we render into FBOs */
         EGLint r, a, dz; p_eglGetConfigAttrib(g_dpy, cf[i], EGL_RED_SIZE, &r); p_eglGetConfigAttrib(g_dpy, cf[i], EGL_ALPHA_SIZE, &a);
         p_eglGetConfigAttrib(g_dpy, cf[i], EGL_DEPTH_SIZE, &dz);
         if (r == 8 && dz == 0) { g_cfg = cf[i]; if (a == 8 || a == 0) break; }
@@ -1399,6 +1427,43 @@ static void gp_report(char* o, size_t cap, size_t* k) {
                                          tot, us[GP_PROG], us[GP_TGT], us[GP_CONST], us[GP_TEX], us[GP_STATE], us[GP_VERT], us[GP_DRAW], g_gp.n);
     memset(&g_gp, 0, sizeof g_gp);
 }
+/* ---- v1.1.3: occlusion queries. GLES 3 has no sample counts: GL_ANY_SAMPLES_PASSED_CONSERVATIVE says visible or hidden,
+ * a visible query reports 0.5% of the render target (q_area). One GL query per D3D query, begun at its first draw (in the
+ * drawing thread's context), ended at Issue(END); GetData flushes when polled again and gives up after 0.25 s. ---- */
+#define XANY_SAMPLES 0x8D6A   /* GL_ANY_SAMPLES_PASSED_CONSERVATIVE */
+static void gq_draw(GlCtx* C, uint32_t W, uint32_t H) {
+    QRes* q = g_qopen->gx; q->rec++;
+    if (!q->rtw) { q->rtw = W; q->rth = H; }
+    if (q->over || q->n) return;
+    if (!glGenQueries || !glBeginQuery) { q->over = 1; return; }
+    if (!q->glq[0] || q->ctx != C) { GLuint id = 0; glGenQueries(1, &id); q->glq[0] = id; q->ctx = C; }   /* names are per context */
+    if (!q->glq[0]) { q->over = 1; return; }
+    glBeginQuery(XANY_SAMPLES, q->glq[0]); q->n = 1;
+}
+static void gles_query_begin(Obj* o) { (void)o; }
+static void gles_query_end(Obj* o) {
+    QRes* q = o->gx;
+    if (!q->n) return;
+    if (q->ctx == gl_cur()) glEndQuery(XANY_SAMPLES); else q->over = 1;
+}
+static int gles_query_data(Obj* o, uint32_t flags, uint32_t* out) {
+    QRes* q = o->gx; (void)flags;
+    if (!q->n || q->ctx != gl_cur() || !glGetQueryObjectuiv) { q_done(q, q_visible(q), 0); *out = q->res; return 1; }
+    GLuint av = 0; glGetQueryObjectuiv(q->glq[0], 0x8867 /* GL_QUERY_RESULT_AVAILABLE */, &av);
+    if (av) {
+        GLuint r = 0; glGetQueryObjectuiv(q->glq[0], 0x8866 /* GL_QUERY_RESULT */, &r);
+        q_done(q, r ? q_area(q) : 0, 1); *out = q->res; return 1;
+    }
+    int poll = q->polls++;
+    if (poll == 1) { glFlush(); g_qs.flushes++; }
+    if (poll) g_qs.waits++;
+    if (!q->t0) q->t0 = mono();
+    else if (mono() - q->t0 > 0.25) { q_done(q, q_visible(q), 0); *out = q->res; return 1; }
+    return 0;
+}
+static void gles_query_free(QRes* q) {
+    if (q && q->glq[0] && q->ctx && q->ctx == gl_cur() && glDeleteQueries) glDeleteQueries(1, &q->glq[0]);
+}
 static void gl_draw(Dev* d, DrawCall* dc) {
     GlCtx* C = gl_cur(); if (!C) return;
     dc->count = prim_verts(dc->pt, dc->prims);
@@ -1414,9 +1479,9 @@ static void gl_draw(Dev* d, DrawCall* dc) {
     uint32_t W, H; int tf; uint32_t vw, vh;
     float fix[4], at[2]; int srgb, sw;
     if (prof) {
-        ts[GP_PROG] = mono();
+        ts[GP_PROG + 1] = mono();
         tf = bind_targets(C, d, &W, &H);
-        ts[GP_TGT] = mono();
+        ts[GP_TGT + 1] = mono();
     } else {
         tf = bind_targets(C, d, &W, &H);
     }
@@ -1432,24 +1497,25 @@ static void gl_draw(Dev* d, DrawCall* dc) {
         float vpu[4] = { (float)(int)d->vp[0], (float)(int)d->vp[1], 2.f / (float)vw, 2.f / (float)vh };
         if (P->l_vp >= 0 && memcmp(vpu, P->vpu, sizeof vpu)) { memcpy(P->vpu, vpu, sizeof vpu); glUniform4fv(P->l_vp, 1, vpu); }
     }
-    if (prof) ts[GP_CONST] = mono();
+    if (prof) ts[GP_CONST + 1] = mono();
     srgb = 0;
     for (int k = 0; k < 16; k++) if (ps->s.samp[k]) srgb |= bind_stage(C, d, k, k, ps->s.samp[k]) << k;
     for (int k = 0; k < 4; k++) if (vs->s.samp[k]) bind_stage(C, d, 16 + k, 17 + k, vs->s.samp[k]);
-    if (prof) ts[GP_TEX] = mono();
+    if (prof) ts[GP_TEX + 1] = mono();
     apply_rs(C, d, tf);
     at[0] = d->rs[15] ? (float)(d->rs[25] & 15) : 0.f; at[1] = (float)(d->rs[24] & 255) / 255.f;
     if (P->l_at >= 0 && (at[0] != P->at[0] || at[1] != P->at[1])) { P->at[0] = at[0]; P->at[1] = at[1]; float v4[4] = { at[0], at[1], 0.f, 0.f }; glUniform4fv(P->l_at, 1, v4); }
     if (P->l_srgb >= 0 && srgb != P->srgb) { P->srgb = srgb; glUniform1i(P->l_srgb, srgb); }
     sw = d->rs[194] != 0;
     if (P->l_srgbw >= 0 && sw != P->srgbw) { P->srgbw = sw; glUniform1i(P->l_srgbw, sw); }
-    if (prof) ts[GP_STATE] = mono();
+    if (prof) ts[GP_STATE + 1] = mono();
     dc->ninst = 0;
     if (dc->indexed && !dc->up && (d->vbfreq[0] & 0x40000000u)) { dc->ninst = d->vbfreq[0] & 0x3FFFFFFFu; if (!dc->ninst) dc->ninst = 1; }
     int bgra = setup_vertices(C, d, &vs->s, dc);
     if (bgra < 0) { GS.skipped++; return; }
     if (P->l_bgra >= 0 && bgra != P->bgra) { P->bgra = bgra; glUniform1i(P->l_bgra, bgra); }
-    if (prof) ts[GP_VERT] = mono();
+    if (prof) ts[GP_VERT + 1] = mono();
+    if (g_qopen) gq_draw(C, W, H);   /* v1.1.3: inside an occlusion query */
     GLenum mode = g_mode[dc->pt];
     if (!dc->indexed) glDrawArrays(mode, 0, (GLsizei)dc->count);
     else {
@@ -1469,7 +1535,7 @@ static void gl_draw(Dev* d, DrawCall* dc) {
         else glDrawElements(mode, (GLsizei)dc->count, it, (const void*)(uintptr_t)off);
     }
     if (prof) {
-        ts[GP_DRAW] = mono();
+        ts[GP_DRAW + 1] = mono();
         for (int i = 0; i < GP_NST; i++) g_gp.ns[i] += (uint64_t)((ts[i + 1] - ts[i]) * 1e9);
     }
     GS.draws++;
@@ -1804,12 +1870,51 @@ int me1gl_get_view(int* x, int* y, int* w, int* h, int* fw, int* fh) {
     pthread_mutex_unlock(&g_pmx);
     return *w > 0;
 }
+#ifndef __ANDROID__
+/* v1.1: desktop windows. X11: the Window itself; Wayland: a wl_egl_window on the surface (libwayland-egl, dlopen),
+ * resized by the presenter when the front end reports a new size */
+static struct { void* (*create)(void*, int, int); void (*destroy)(void*); void (*resize)(void*, int, int, int, int); int tried; } WLE;
+static void* g_wlwin; static int g_wlw, g_wlh; static Me1Window* g_pwin;
+static int wle_load(void) {
+    if (!WLE.tried) {
+        WLE.tried = 1;
+        void* h = dlopen("libwayland-egl.so.1", RTLD_NOW | RTLD_LOCAL); if (!h) h = dlopen("libwayland-egl.so", RTLD_NOW | RTLD_LOCAL);
+        if (h) { *(void**)&WLE.create = dlsym(h, "wl_egl_window_create"); *(void**)&WLE.destroy = dlsym(h, "wl_egl_window_destroy"); *(void**)&WLE.resize = dlsym(h, "wl_egl_window_resize"); }
+        if (!WLE.create || !WLE.destroy || !WLE.resize) glog("libwayland-egl not found: no Wayland window output\n");
+    }
+    return WLE.create && WLE.destroy && WLE.resize;
+}
+static void ws_release(void) { if (g_wlwin) { WLE.destroy(g_wlwin); g_wlwin = NULL; } g_pwin = NULL; }
+static void ws_resize(void) {   /* presenter, before drawing: follow the window size (Wayland only; X11 surfaces track it) */
+    Me1Window* w = g_pwin;
+    if (!w || !g_wlwin) return;
+    int ww = w->w, wh = w->h;
+    if (ww > 0 && wh > 0 && (ww != g_wlw || wh != g_wlh)) { WLE.resize(g_wlwin, ww, wh, 0, 0); g_wlw = ww; g_wlh = wh; }
+}
+static EGLSurface ws_surface(Me1Window* w) {
+    EGLSurface s = EGL_NO_SURFACE;
+    ws_release();
+    if (w->kind == ME1_WS_WAYLAND) {
+        if (!wle_load() || !w->surface) return EGL_NO_SURFACE;
+        g_wlw = w->w > 0 ? w->w : 1280; g_wlh = w->h > 0 ? w->h : 720;
+        g_wlwin = WLE.create(w->surface, g_wlw, g_wlh);
+        if (!g_wlwin) { glog("wl_egl_window_create failed\n"); return EGL_NO_SURFACE; }
+        s = p_eglCreateWindowSurface(g_dpy, g_cfg, (EGLNativeWindowType)g_wlwin, NULL);
+    } else s = p_eglCreateWindowSurface(g_dpy, g_cfg, (EGLNativeWindowType)(uintptr_t)w->xwindow, NULL);   /* legacy entry: the XID itself */
+    if (s == EGL_NO_SURFACE) { glog("eglCreateWindowSurface (%s) failed: 0x%x\n", w->kind == ME1_WS_WAYLAND ? "Wayland" : "X11", p_eglGetError()); ws_release(); }
+    else g_pwin = w;
+    return s;
+}
+#endif
 static EGLSurface win_surface(void* win, int* fake) {
     *fake = 0;
     if (!win) {
         if (!g_fakew) return EGL_NO_SURFACE;
         *fake = 1; return mk_pb(g_fakew, g_fakeh);
     }
+#ifndef __ANDROID__
+    if (g_ws_kind) return ws_surface((Me1Window*)win);
+#endif
 #ifdef __ANDROID__
     EGLint vid = 0; p_eglGetConfigAttrib(g_dpy, g_cfg, EGL_NATIVE_VISUAL_ID, &vid);
     typedef int32_t (*SBG)(void*, int32_t, int32_t, int32_t);
@@ -1889,6 +1994,9 @@ static void* presenter_main(void* arg) {
             gen = g_win_gen; void* w = g_win_pending; g_haswin = 0;
             pthread_mutex_unlock(&g_pmx);
             if (surf != EGL_NO_SURFACE) { p_eglMakeCurrent(g_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT); p_eglDestroySurface(g_dpy, surf); surf = EGL_NO_SURFACE; }
+#ifndef __ANDROID__
+            if (!fake) ws_release();
+#endif
             int ok = 0;
             if (g_cpupresent) {   /* no EGL window surface: lock the window and copy */
                 cwin = NULL; gw = gh = -1;
@@ -1906,7 +2014,7 @@ static void* presenter_main(void* arg) {
             }
             surf = win_surface(w, &fake);
             if (surf != EGL_NO_SURFACE && p_eglMakeCurrent(g_dpy, surf, surf, ctx)) {
-                ok = 1; p_eglSwapInterval(g_dpy, fake ? 0 : 1);
+                ok = 1; { const char* vs = getenv("ME1_VSYNC"); p_eglSwapInterval(g_dpy, fake ? 0 : vs && *vs ? atoi(vs) : 1); }
                 p_eglQuerySurface(g_dpy, surf, EGL_WIDTH, &sw); p_eglQuerySurface(g_dpy, surf, EGL_HEIGHT, &sh);
                 if (!rfbo) glGenFramebuffers(1, &rfbo);
                 glog("presenter: %s %dx%d\n", fake ? "fake window (pbuffer)" : "window", sw, sh);
@@ -1926,6 +2034,9 @@ static void* presenter_main(void* arg) {
             cpu_present(cwin, s, ww, wh, &gw, &gh, rfbo); n++;
         } else if (surf != EGL_NO_SURFACE) {
             if (s->wfence) glWaitSync(s->wfence, 0, GL_TIMEOUT_IGNORED);
+#ifndef __ANDROID__
+            if (!fake) ws_resize();
+#endif
             if (!fake) { p_eglQuerySurface(g_dpy, surf, EGL_WIDTH, &sw); p_eglQuerySurface(g_dpy, surf, EGL_HEIGHT, &sh); }
             pthread_mutex_lock(&g_pmx); set_view(sw, sh, s->w, s->h); int vx = g_view[0], vy = g_view[1], vw = g_view[2], vh = g_view[3]; pthread_mutex_unlock(&g_pmx);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0); glDisable(GL_SCISSOR_TEST); glColorMask(1, 1, 1, 1);
@@ -1958,7 +2069,7 @@ static void presenter_start(void) {
     if (e && sscanf(e, "%dx%d", &g_fakew, &g_fakeh) == 2 && g_fakew > 0 && g_fakeh > 0) {}
     else g_fakew = g_fakeh = 0;
 #ifndef __ANDROID__
-    if (!g_fakew && !g_cpupresent) return;
+    if (!g_fakew && !g_cpupresent && !g_ws_kind) return;   /* v1.1: desktop window -> presenter */
 #endif
     if (!g_winbit && !g_fakew && !g_cpupresent) { glog("EGL config without window support: no presenter\n"); return; }
     pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
