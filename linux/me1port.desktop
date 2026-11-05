@@ -1,0 +1,28 @@
+[Desktop Entry]
+Type=Application
+Name=Mass Effect
+Name[ru]=Mass Effect
+GenericName=Role-playing game
+GenericName[ru]=Ролевая игра
+Comment=Mass Effect (2007), native Linux port (static recompilation): launcher and settings
+Comment[ru]=Mass Effect (2007): нативный порт для Linux (статическая перекомпиляция) — лаунчер и настройки
+Exec=@BIN@/me1-launcher
+Icon=me1port
+Terminal=false
+Categories=Game;RolePlaying;ActionGame;
+Keywords=mass;effect;bioware;rpg;
+StartupWMClass=me1port
+PrefersNonDefaultGPU=true
+SingleMainWindow=true
+Actions=play;settings;
+
+[Desktop Action play]
+Name=Play now
+Name[ru]=Сразу играть
+Exec=@BIN@/me1-launcher --play
+
+[Desktop Action settings]
+Name=Configuration editor (terminal)
+Name[ru]=Редактор настроек (терминал)
+Exec=@BIN@/me1cfg
+Terminal=true
