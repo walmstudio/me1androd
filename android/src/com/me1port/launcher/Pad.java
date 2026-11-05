@@ -18,6 +18,7 @@ final class Pad {
     boolean xinput;           /* profile */
     float lookScale = 1.2f;   /* kbm: right stick camera speed (ControlsSettings "look") */
     boolean invertY;
+    boolean nintendo;         /* v1.1.3 (ControlsSettings "nintendo"): physical A/B and X/Y swapped (Nintendo-style controllers) */
     /* physical: buttons from key events + d-pad from the HAT axes */
     int pKeys, pHat; float pLX, pLY, pRX, pRY, pLT, pRT;
     /* on-screen */
@@ -57,6 +58,7 @@ final class Pad {
         if (code == KeyEvent.KEYCODE_BUTTON_L2) { pLT = down ? 1 : 0; flush(); return true; }
         if (code == KeyEvent.KEYCODE_BUTTON_R2) { pRT = down ? 1 : 0; flush(); return true; }
         int b = bit(code); if (b == 0) return false;
+        if (nintendo) b = b == A ? B : b == B ? A : b == X ? Y : b == Y ? X : b;
         pKeys = down ? pKeys | b : pKeys & ~b; flush(); return true;
     }
     void physAxes(float lx, float ly, float rx, float ry, float lt, float rt, float hx, float hy) {

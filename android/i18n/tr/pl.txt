@@ -365,3 +365,15 @@ X2|Przełączyć też język tekstu w grze na
 X3|? W folderze gry muszą być pliki lokalizacji tego języka.
 X4|Tak
 X5|Nie
+S90|Flary obiektywu
+S91|LensFlares: rozbłyski i poświaty słońca i lamp. Wyłącz, jeśli są zbyt jasne lub przeszkadzają
+S92|Poświata (bloom)
+S93|Bloom: poświata wokół jasnych miejsc. Wyłącz, jeśli obraz wygląda na zamglony lub potrzeba więcej FPS na słabym GPU
+J306|Układ przycisków ekranowych
+J307|Standardowy: klawisze PC (lub pad Xbox z modem), gałka, wolny obszar = kamera
+J308|Jak w porcie Skyrim: A/B/X/Y, bumpery i spusty, Back/Start, cała lewa połowa ekranu to gałka, przycisk klawiatury
+J309|Lewa połowa ekranu = gałka, prawa = kamera, krótkie dotknięcie = kliknięcie; ⌨ = klawiatura telefonu. Przyciski trafiają do gry jako pad Xbox (włączony „Pad XInput”, wymaga moda ME1Controller).
+J310|Lewa połowa ekranu = gałka, prawa = kamera, krótkie dotknięcie = kliknięcie; ⌨ = klawiatura telefonu. Bez moda przyciski działają jak klawiatura i mysz: A = E, B = Q, X = Spacja, Y = F, LB = R, RB = Shift, LT = PPM, RT = LPM, Back = M, Start = Esc. Z modem ME1Controller włącz „Pad XInput”.
+J311|Układ Nintendo na fizycznym padzie (A/B i X/Y zamienione)
+J312|⌨ Klawiatura telefonu
+J313|zapytania o widoczność (occlusion queries): 1 = domyślnie, jak w D3D9: niewidoczne obiekty są odrzucane, flary obiektywu nie świecą przez ściany; 2 = nigdy nie czekać na GPU (wynik z opóźnieniem jednej klatki, jeśli przy 1 są przycięcia); 0 = wył. (wszystko uznawane za widoczne, jak przed v1.1.3)

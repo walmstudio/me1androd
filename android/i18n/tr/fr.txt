@@ -365,3 +365,15 @@ X2|Changer aussi la langue du texte en jeu en
 X3|? Le dossier du jeu doit contenir les fichiers de localisation de cette langue.
 X4|Oui
 X5|Non
+S90|Reflets d'objectif
+S91|LensFlares : reflets et halos du soleil et des lampes. Désactivez-les s'ils sont trop lumineux ou gênants
+S92|Lueur (bloom)
+S93|Bloom : halo autour des zones lumineuses. Désactivez si l'image paraît voilée ou s'il faut plus d'images/s sur un GPU faible
+J306|Disposition des boutons à l'écran
+J307|Standard : touches PC (ou manette Xbox avec le mod), stick, zone libre = caméra
+J308|Comme le portage Skyrim : A/B/X/Y, gâchettes hautes et basses, Back/Start, toute la moitié gauche de l'écran sert de stick, bouton clavier
+J309|Moitié gauche de l'écran = stick, moitié droite = caméra, appui bref = clic ; ⌨ = clavier du téléphone. Les boutons arrivent au jeu comme une manette Xbox (« Manette XInput » activée, nécessite le mod ME1Controller).
+J310|Moitié gauche de l'écran = stick, moitié droite = caméra, appui bref = clic ; ⌨ = clavier du téléphone. Sans le mod, les boutons servent de clavier et souris : A = E, B = Q, X = Espace, Y = F, LB = R, RB = Maj, LT = clic droit, RT = clic gauche, Back = M, Start = Échap. Avec le mod ME1Controller, activez « Manette XInput ».
+J311|Disposition Nintendo sur une manette physique (A/B et X/Y inversés)
+J312|⌨ Clavier du téléphone
+J313|requêtes d'occlusion : 1 = par défaut, comme en D3D9 : l'invisible est éliminé, les reflets d'objectif ne traversent plus les murs ; 2 = ne jamais attendre le GPU (résultat avec une image de retard, si 1 saccade) ; 0 = désactivé (tout est considéré visible, comme avant v1.1.3)

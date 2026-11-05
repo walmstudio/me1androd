@@ -365,3 +365,15 @@ X2|Auch die Textsprache im Spiel umstellen auf
 X3|? Im Spielordner müssen die Lokalisierungsdateien dieser Sprache liegen.
 X4|Ja
 X5|Nein
+S90|Linsenreflexe
+S91|LensFlares: Reflexe und Lichthöfe von Sonne und Lampen. Ausschalten, wenn sie zu hell sind oder stören
+S92|Leuchten (Bloom)
+S93|Bloom: Lichthof um helle Stellen. Ausschalten, wenn das Bild dunstig wirkt oder auf einer schwachen GPU mehr FPS nötig sind
+J306|Anordnung der Bildschirmtasten
+J307|Standard: PC-Tasten (oder Xbox-Gamepad mit Mod), Stick, freie Fläche = Kamera
+J308|Wie im Skyrim-Port: A/B/X/Y, Schulter- und Triggertasten, Back/Start, die ganze linke Bildschirmhälfte ist der Stick, Tastatur-Taste
+J309|Linke Bildschirmhälfte = Stick, rechte = Kamera, kurzes Tippen = Klick; ⌨ = Handy-Tastatur. Die Tasten gehen als Xbox-Gamepad ans Spiel („XInput-Gamepad“ ist an, benötigt die Mod ME1Controller).
+J310|Linke Bildschirmhälfte = Stick, rechte = Kamera, kurzes Tippen = Klick; ⌨ = Handy-Tastatur. Ohne Mod wirken die Tasten als Tastatur und Maus: A = E, B = Q, X = Leertaste, Y = F, LB = R, RB = Shift, LT = RMT, RT = LMT, Back = M, Start = Esc. Mit der Mod ME1Controller „XInput-Gamepad“ einschalten.
+J311|Nintendo-Belegung am physischen Gamepad (A/B und X/Y vertauscht)
+J312|⌨ Handy-Tastatur
+J313|Occlusion Queries (Sichtbarkeitsabfragen): 1 = Standard, wie in D3D9: Verdecktes wird verworfen, Linsenreflexe scheinen nicht durch Wände; 2 = nie auf die GPU warten (Ergebnis ein Bild später, falls 1 ruckelt); 0 = aus (alles gilt als sichtbar, wie vor v1.1.3)

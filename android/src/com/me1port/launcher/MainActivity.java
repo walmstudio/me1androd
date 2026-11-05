@@ -174,10 +174,45 @@ public class MainActivity extends Activity {
     private static boolean isPadMod(File mod) {
         File ini = new File(modRoot(mod), "Config/BIOInput.ini");
         if (!ini.exists()) { File[] c = new File(modRoot(mod), "Config").listFiles(); if (c != null) for (File x : c) if (x.getName().equalsIgnoreCase("BIOInput.ini")) ini = x; }
-        try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(ini))) {
-            String l; while ((l = r.readLine()) != null) if (l.contains("XboxTypeS_")) return true;
+        try {   /* v1.1.4: raw bytes without NULs - the ini may be UTF-16, FileReader missed that */
+            byte[] b = java.nio.file.Files.readAllBytes(ini.toPath());
+            StringBuilder t = new StringBuilder(b.length);
+            for (byte x : b) if (x != 0) t.append((char) (x & 0xFF));
+            return t.indexOf("XboxTypeS_") >= 0;
         } catch (Exception ignored) { }
         return false;
+    }
+    /** v1.1.4: the first enabled controller mod or null */
+    private String padModName() {
+        for (File m : findMods()) if (prefs.getBoolean("mod_" + m.getName(), false) && isPadMod(m)) return m.getName();
+        return null;
+    }
+    /** tells the in-game controls dialog (controls prefs "padMod") which controller mod is on */
+    private String syncPadMod() {
+        String pm = padModName();
+        SharedPreferences cp = ControlsSettings.prefs(this);
+        if (pm == null ? cp.contains("padMod") : !pm.equals(cp.getString("padMod", null)))
+            (pm == null ? cp.edit().remove("padMod") : cp.edit().putString("padMod", pm)).apply();
+        return pm;
+    }
+    /** v1.1.4: a controller mod + the keyboard/mouse profile = no controls at all (the mod rebinds the game to the Xbox pad);
+     *  then != null: called from "Start game", runs after the choice (Back cancels the start) */
+    private void padModWarning(final String mod, final Runnable then) {
+        final SharedPreferences cp = ControlsSettings.prefs(this);
+        final Runnable fin = () -> { relocate(true); if (then != null) then.run(); };
+        new AlertDialog.Builder(this).setTitle(L.t("Включён мод для геймпада: ") + mod)
+                .setMessage(L.t("Мод переводит управление игры на геймпад Xbox. С профилем «Клавиатура и мышь» не будут работать ни раскладка ПК, ни раскладка как в Skyrim — игра не примет ни касания, ни клавиши. ")
+                        + L.t("Отключите мод сами (переключатель в списке модов в разделе «Управление и моды») или верните профиль «Геймпад Xbox / XInput».")
+                        + (then != null ? L.t("\n\nИгра запустится после выбора.") : ""))
+                .setPositiveButton(L.t("Вернуть геймпад XInput"), (d, w) -> { cp.edit().putBoolean("xinput", true).apply(); fin.run(); })
+                .setNegativeButton(L.t("Отключить мод"), (d, w) -> {
+                    SharedPreferences.Editor e = prefs.edit();
+                    for (File m : findMods()) if (prefs.getBoolean("mod_" + m.getName(), false) && isPadMod(m)) e.putBoolean("mod_" + m.getName(), false);
+                    e.apply(); syncPadMod(); toast(L.t("Мод отключён: ") + mod); fin.run();
+                })
+                .setNeutralButton(L.t("Оставить как есть"), (d, w) -> fin.run())
+                .setOnCancelListener(d -> relocate(true))
+                .show();
     }
     private List<File> enabledMods() {
         List<File> r = new ArrayList<>();
@@ -209,18 +244,23 @@ public class MainActivity extends Activity {
         final TextView warn = text("", 12, Color.rgb(0xF0, 0xB0, 0x40), false);
         prof.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> a, View v, int pos, long l) {
-                if ((pos == 1) != cp.getBoolean("xinput", false)) { cp.edit().putBoolean("xinput", pos == 1).apply(); relocate(true); }
+                if ((pos == 1) != cp.getBoolean("xinput", false)) {
+                    cp.edit().putBoolean("xinput", pos == 1).apply();
+                    String pm = pos == 0 ? padModName() : null;
+                    if (pm != null) padModWarning(pm, null); else relocate(true);
+                }
             }
             @Override public void onNothingSelected(AdapterView<?> a) {}
         });
-        boolean xi = cp.getBoolean("xinput", false), padMod = false;
-        for (File m : findMods()) if (prefs.getBoolean("mod_" + m.getName(), false) && isPadMod(m)) padMod = true;
+        boolean xi = cp.getBoolean("xinput", false);
+        String pmName = syncPadMod(); boolean padMod = pmName != null;
         root.addView(text(xi ? L.t("Физический и экранный геймпад (⊕ в игре) работают как контроллер Xbox 360. В оригинальной игре нет ")
                 + L.t("привязок для геймпада — нужен мод ME1Controller (включите его ниже). Мод рассчитан на 16:9 и английский текст подсказок.")
                 : L.t("Геймпад эмулирует клавиатуру и мышь: левый стик — WASD, правый — камера, RT — огонь, LT — прицел, A — E, B — Q, ")
                 + L.t("X — Пробел, Y — F, LB — R, RB — Shift, L3 — Ctrl, R3 — J, Start — Esc, Back — M, крестовина — стрелки. ")
                 + L.t("Меню — касанием."), 12, Color.GRAY, false));
         if (xi && !padMod) { warn.setText(L.t("⚠ Не включён мод с привязками геймпада (Config/BIOInput.ini с XboxTypeS_…) — в игре геймпад работать не будет.")); root.addView(warn); }
+        if (!xi && padMod) { warn.setText(L.t("⚠ Включён мод для геймпада: ") + pmName + L.t(" — с профилем «Клавиатура и мышь» в игре не будет работать ни раскладка ПК, ни раскладка как в Skyrim. Выберите «Геймпад Xbox / XInput» или отключите мод ниже.")); root.addView(warn); }
         List<File> mods = findMods();
         root.addView(text(dlcStatus(), 13, Color.LTGRAY, false));
         root.addView(text(L.t("Моды: ") + pretty(modsDir()) + L.t("/<имя мода>/ (внутри — Config и «Mass Effect»; файлы подменяются при запуске, ")
@@ -232,7 +272,7 @@ public class MainActivity extends Activity {
             sw.setOnCheckedChangeListener((b, on) -> {
                 prefs.edit().putBoolean("mod_" + m.getName(), on).apply();
                 if (on && pm && !cp.getBoolean("xinput", false)) { cp.edit().putBoolean("xinput", true).apply(); toast(L.t("Профиль управления: геймпад XInput")); }
-                if (!on && pm && cp.getBoolean("xinput", false)) { cp.edit().putBoolean("xinput", false).apply(); toast(L.t("Профиль управления: клавиатура и мышь")); }
+                if (!on && pm && cp.getBoolean("xinput", false) && padModName() == null) { cp.edit().putBoolean("xinput", false).apply(); toast(L.t("Профиль управления: клавиатура и мышь")); }
                 relocate(true);
             });
             root.addView(sw);
@@ -626,12 +666,14 @@ public class MainActivity extends Activity {
         { "ME1_CPU_PIN=0", "не распределять потоки по ядрам (по умолчанию игровой поток и поток рендера — на быстрых ядрах, остальные — на медленных)" },
         { "ME1_PHONE_MOD=1", "применять модификаторы из <папка игры>/PhoneModify (то же, что переключатель «Модификаторы PhoneModify»): лимиты вызовов/примитивов на кадр, ключи INI, патчи кода. Создать модификатор: me1cfg modgen balanced|aggressive" },
         { "ME1_SHOW_FPS=1", "счётчик FPS в правом верхнем углу (то же, что «Показывать FPS» в настройках порта)" },
+        { "ME1_CURSOR=2", "курсор мыши игры: 1 — по умолчанию, виден, когда игра его показывает (меню); 2 — всегда; 0 — никогда" },
         { "ME1_FPS_LIMIT=30", "ограничить частоту кадров (10–240): меньше нагрев и расход батареи; 0 — без ограничения" },
         { "ME1_RENDERER=vulkan", "рендерер: vulkan — свой D3D9→Vulkan, gles — OpenGL ES, zink — OpenGL ES через Mesa Zink (обычно задаёт лаунчер)" },
         { "ME1_VK_VALIDATE=1", "Vulkan: слой проверки VK_LAYER_KHRONOS_validation, если он есть (медленно, для отладки)" },
         { "ME1_VK_STRICT=1", "Vulkan: вести себя как на самом слабом драйвере (без BC-сжатия, без float-фильтрации) — для проверки" },
         { "ME1_VK_SPLIT=2048", "Vulkan: отправлять кадр частями по N вызовов отрисовки — обход падения драйвера Mali (DEVICE_LOST на первом тяжёлом кадре). По умолчанию включено (2048); 0 — одним сабмитом, как в v0.10.2" },
         { "ME1_GPU_TIMER=0", "не замерять время GPU на кадр (строка «[d3d] frame … GPU … ms/frame» в логе)" },
+        { "ME1_OCCLUSION=2", "запросы видимости (occlusion queries): 1 — по умолчанию, как в D3D9: невидимое отсекается, блики не светят сквозь стены; 2 — без ожидания GPU (результат с опозданием на кадр — если с 1 подтормаживает); 0 — выкл. (всё считается видимым, как до v1.1.3)" },
         { "ME1_INVARIANT=0", "выключить invariant gl_Position: чуть быстрее, но возможны полосы/мерцание на освещённых поверхностях (1 — по умолчанию)" },
         { "ME1_TEX_16=0", "DXT-текстуры (распаковка на CPU) в RGBA8: лучше качество, больше памяти; 1 — по умолчанию (DXT1 → RGB5A1); 2 — ещё DXT3/5 → RGBA4" },
         { "ME1_TEX_MAXSIZE=1024", "ограничить размер текстур (512, 1024, 2048): меньше памяти и загрузок, ниже чёткость" },
@@ -672,7 +714,7 @@ public class MainActivity extends Activity {
         { "ME1_TRACE_REG=1", "лог обращений к реестру" },
         { "ME1_LIST_MISSING=1", "перечислить все нереализованные функции Windows" },
         { "ME1_HEAP_NOREUSE=1", "не переиспользовать освобождённую память (поиск ошибок; память растёт!)" },
-        { "ME1_WATCH=0", "выключить сторож памяти PhysX (по умолчанию следит за 12283ce0)" },
+        { "ME1_WATCH=1", "включить сторож памяти PhysX (следит за 12283ce0; по умолчанию выключен с v1.1)" },
         { "ME1_MAX_SECONDS=120", "закрыть игру через N секунд после первого кадра" },
         { "ME1_MAX_FRAMES=5000", "закрыть игру после N кадров" },
         { "", "Задаёт лаунчер (можно переопределить)" },
@@ -870,7 +912,11 @@ public class MainActivity extends Activity {
         }
         return env;
     }
-    private void startGame() { prepareDriver(false, this::startGame); }
+    private void startGame() {
+        String pm = syncPadMod();   /* v1.1.4: a controller mod with the keyboard/mouse profile - warn before starting */
+        if (pm != null && !ControlsSettings.prefs(this).getBoolean("xinput", false)) { padModWarning(pm, () -> prepareDriver(false, this::startGame)); return; }
+        prepareDriver(false, this::startGame);
+    }
     private void startGame(Map<String, String> drv) {
         docsDir.mkdirs();
         Map<String, String> env = gameEnv(false, drv);

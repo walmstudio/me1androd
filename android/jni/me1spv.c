@@ -2,7 +2,11 @@
  * the runtime itself stays plain C: libme1game.so dlopens libme1spv.so when the Vulkan renderer starts.
  * me1spv_compile(stage 0 vertex / 1 fragment, GLSL source, &words, &nwords, log, logcap) -> 1 ok, 0 error (log). */
 #include <glslang/Include/glslang_c_interface.h>
+#if defined(__has_include) && !__has_include(<glslang/Public/resource_limits_c.h>)
+const glslang_resource_t* glslang_default_resource(void);   /* glslang 11.x (Ubuntu 22.04): no public header, same symbol */
+#else
 #include <glslang/Public/resource_limits_c.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

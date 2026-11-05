@@ -365,3 +365,15 @@ X2|Přepnout i jazyk textu ve hře na
 X3|? Ve složce hry musí být lokalizační soubory tohoto jazyka.
 X4|Ano
 X5|Ne
+S90|Odlesky objektivu
+S91|LensFlares: odlesky a záře slunce a lamp. Vypněte, pokud jsou příliš jasné nebo ruší
+S92|Záře (bloom)
+S93|Bloom: záře kolem jasných míst. Vypněte, pokud obraz působí zamlženě nebo potřebujete více FPS na slabé GPU
+J306|Rozložení tlačítek na obrazovce
+J307|Standardní: klávesy PC (nebo ovladač Xbox s modem), páčka, volná plocha = kamera
+J308|Jako v portu Skyrim: A/B/X/Y, bumpery a spouště, Back/Start, celá levá polovina obrazovky je páčka, tlačítko klávesnice
+J309|Levá polovina obrazovky = páčka, pravá = kamera, krátké klepnutí = klik; ⌨ = klávesnice telefonu. Tlačítka jdou do hry jako ovladač Xbox (zapnutý „Gamepad XInput“, vyžaduje mod ME1Controller).
+J310|Levá polovina obrazovky = páčka, pravá = kamera, krátké klepnutí = klik; ⌨ = klávesnice telefonu. Bez modu tlačítka fungují jako klávesnice a myš: A = E, B = Q, X = Mezerník, Y = F, LB = R, RB = Shift, LT = PTM, RT = LTM, Back = M, Start = Esc. S modem ME1Controller zapněte „Gamepad XInput“.
+J311|Rozložení Nintendo na fyzickém ovladači (A/B a X/Y prohozené)
+J312|⌨ Klávesnice telefonu
+J313|dotazy na viditelnost (occlusion queries): 1 = výchozí, jako v D3D9: neviditelné se zahazuje, odlesky čočky nesvítí přes zdi; 2 = nikdy nečekat na GPU (výsledek o snímek později, pokud 1 trhá); 0 = vyp. (vše se bere jako viditelné, jako před v1.1.3)

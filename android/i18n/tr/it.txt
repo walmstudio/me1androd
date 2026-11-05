@@ -365,3 +365,15 @@ X2|Cambiare anche la lingua del testo nel gioco in
 X3|? Nella cartella del gioco devono esserci i file di localizzazione di questa lingua.
 X4|Sì
 X5|No
+S90|Riflessi lente
+S91|LensFlares: riflessi e aloni di sole e lampade. Disattivali se sono troppo luminosi o fastidiosi
+S92|Bagliore (bloom)
+S93|Bloom: alone attorno alle zone luminose. Disattivalo se l'immagine sembra velata o servono più FPS su una GPU debole
+J306|Disposizione dei tasti a schermo
+J307|Standard: tasti PC (o controller Xbox con la mod), stick, area libera = visuale
+J308|Come nel port di Skyrim: A/B/X/Y, dorsali e grilletti, Back/Start, tutta la metà sinistra dello schermo è lo stick, tasto tastiera
+J309|Metà sinistra dello schermo = stick, metà destra = visuale, tocco breve = clic; ⌨ = tastiera del telefono. I tasti arrivano al gioco come un controller Xbox («Gamepad XInput» attivo, richiede la mod ME1Controller).
+J310|Metà sinistra dello schermo = stick, metà destra = visuale, tocco breve = clic; ⌨ = tastiera del telefono. Senza la mod i tasti funzionano come tastiera e mouse: A = E, B = Q, X = Spazio, Y = F, LB = R, RB = Shift, LT = tasto destro, RT = tasto sinistro, Back = M, Start = Esc. Con la mod ME1Controller attiva «Gamepad XInput».
+J311|Disposizione Nintendo sul controller fisico (A/B e X/Y scambiati)
+J312|⌨ Tastiera del telefono
+J313|query di occlusione: 1 = predefinito, come in D3D9: ciò che è nascosto viene scartato, i riflessi dell'obiettivo non attraversano i muri; 2 = non attendere mai la GPU (risultato in ritardo di un fotogramma, se con 1 scatta); 0 = disattivato (tutto è considerato visibile, come prima della v1.1.3)

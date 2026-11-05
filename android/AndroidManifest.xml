@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.me1port.launcher" android:versionCode="33" android:versionName="1.0">
+    package="com.me1port.launcher" android:versionCode="36" android:versionName="1.1.5">
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="29" />
     <!-- game files in /sdcard/MassEffect (legacy storage on Android 10; "all files access" fallback on 11+) -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />

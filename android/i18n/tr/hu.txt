@@ -365,3 +365,15 @@ X2|A játék szövegének nyelvét is átállítod erre:
 X3|? A játék mappájában kellenek ennek a nyelvnek a honosítási fájljai.
 X4|Igen
 X5|Nem
+S90|Lencsecsillanás
+S91|LensFlares: a nap és a lámpák csillanásai és fényudvarai. Kapcsold ki, ha túl erősek vagy zavarnak
+S92|Ragyogás (bloom)
+S93|Bloom: fényudvar a világos részek körül. Kapcsold ki, ha a kép párás, vagy gyenge GPU-n több FPS kell
+J306|A képernyőgombok elrendezése
+J307|Normál: PC-billentyűk (vagy Xbox-kontroller a moddal), kar, szabad terület = kamera
+J308|Mint a Skyrim-portban: A/B/X/Y, vállgombok és ravaszok, Back/Start, a képernyő teljes bal fele a kar, billentyűzetgomb
+J309|A képernyő bal fele = kar, jobb fele = kamera, rövid érintés = kattintás; ⌨ = a telefon billentyűzete. A gombok Xbox-kontrollerként jutnak a játékba (az „XInput kontroller” be van kapcsolva, kell hozzá az ME1Controller mod).
+J310|A képernyő bal fele = kar, jobb fele = kamera, rövid érintés = kattintás; ⌨ = a telefon billentyűzete. Mod nélkül a gombok billentyűzetként és egérként működnek: A = E, B = Q, X = Szóköz, Y = F, LB = R, RB = Shift, LT = jobb gomb, RT = bal gomb, Back = M, Start = Esc. Az ME1Controller moddal kapcsolja be az „XInput kontroller” opciót.
+J311|Nintendo-elrendezés a fizikai kontrolleren (A/B és X/Y felcserélve)
+J312|⌨ A telefon billentyűzete
+J313|láthatósági lekérdezések (occlusion queries): 1 = alapértelmezett, mint a D3D9-ben: a takart tárgyak kiesnek, a lencsefények nem világítanak át a falakon; 2 = soha nem vár a GPU-ra (az eredmény egy képkockával később, ha 1-gyel akad); 0 = ki (minden láthatónak számít, mint a v1.1.3 előtt)

@@ -35,7 +35,9 @@ import java.util.Locale;
  * GL programs) and afterwards a small "compiling shaders" badge while the game compiles or links shaders.
  * v0.9.7: loading picture behind the start-up screen; gamepads (Pad): physical controllers and the on-screen Xbox pad
  * feed the game's XInput pad 0 (profile "xinput", needs a controller mod) or emulate keyboard + mouse (profile "kbm");
- * rumble (XInputSetState) is played on the controller's vibrator or on the phone. */
+ * rumble (XInputSetState) is played on the controller's vibrator or on the phone.
+ * v1.1.3: the phone keyboard (⌨ key of the "skyrim" controls layout): KbdSink takes the IME's text - characters a PC
+ * keyboard has are sent as key presses (like a hardware keyboard), others as WM_CHAR (nativeChar); Backspace / Enter as keys. */
 public class GameActivity extends Activity implements SurfaceHolder.Callback {
     static { System.loadLibrary("me1game"); }
     static native int nativeStart(String[] args, String[] env, String log);
@@ -44,11 +46,14 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     static native void nativeKey(int code, int down, int unicode);
     static native void nativeMouseRel(float dx, float dy);
     static native void nativeMouseButton(int button, int down);
+    static native long nativeCursor();   /* v1.1.5: CursorView */
     /** XInput pad 0: XINPUT_GAMEPAD buttons, triggers 0..255, sticks -32768..32767 (Y up = positive) */
     static native void nativePad(int buttons, int lt, int rt, int lx, int ly, int rx, int ry);
     static native void nativePadConnect(int on);
     /** (left motor << 16) | right motor, 0..65535 each (last XInputSetState) */
     static native int nativePadVibration();
+    /** v1.1.3: a typed character without a PC key (IME text, e.g. Cyrillic) -> WM_CHAR */
+    static native void nativeChar(int ch);
     static final Pad pad = new Pad();
     /** see me1_status() in hle_d3d9_gl.h */
     static native long[] nativeStatus();
@@ -56,6 +61,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     static native long[] nativePerf();
     private static final String[] RENDERERS = { "нет вывода", "GLES", "GLES (zink)", "Vulkan" };
     private ControlsOverlay overlay;
+    private CursorView cursor;          /* v1.1.5 */
     private TextView status, badge, fps;
     private ImageView splash;
     private boolean rumble, rumblePhone, vibrating;
@@ -65,6 +71,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private android.content.SharedPreferences cprefs;
     private boolean polling;
     private static GameActivity current;
+    private SurfaceView gameView;
+    private KbdSink kbd;
+    private boolean kbdOn, imeSeen;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -80,8 +89,14 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         SurfaceView sv = new SurfaceView(this);
         sv.getHolder().addCallback(this);
         sv.setFocusable(true); sv.setFocusableInTouchMode(true);
+        gameView = sv;
+        /* pan, not resize: the game surface keeps its size; the keyboard target sits in the top-left corner, so nothing moves */
+        w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN | WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN);
         FrameLayout root = new FrameLayout(this);
         root.addView(sv);
+        kbd = new KbdSink(this);   /* 1x1, invisible: target of the phone keyboard */
+        root.addView(kbd, new FrameLayout.LayoutParams(1, 1));
+        w.getDecorView().getViewTreeObserver().addOnGlobalLayoutListener(this::checkIme);
         splash = new ImageView(this);   /* loading picture until the first frame (assets/loading.jpg) */
         try (java.io.InputStream in = getAssets().open("loading.jpg")) {
             splash.setImageBitmap(BitmapFactory.decodeStream(in)); splash.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -90,6 +105,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         } catch (Exception e) { splash = null; }
         overlay = new ControlsOverlay(this, this::mouseTouch);   /* on-screen controls (toggle in the top-left corner) */
         root.addView(overlay);
+        cursor = new CursorView(this, ControlsSettings.prefs(this));   /* v1.1.5: the game's mouse cursor (menus) */
+        root.addView(cursor);
         float dp = getResources().getDisplayMetrics().density;
         status = new TextView(this);   /* not clickable: touches go through to the controls */
         status.setTextColor(Color.rgb(0xE0, 0xE6, 0xEE)); status.setTextSize(15); status.setGravity(Gravity.CENTER);
@@ -141,10 +158,12 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
 
     @Override protected void onPause() {
         super.onPause(); if (overlay != null) overlay.releaseAll(); pad.releaseAll(); stopRumble();
+        if (cursor != null) cursor.stop();
         polling = false; ui.removeCallbacks(poll); ui.removeCallbacks(rumblePoll);
     }
     @Override protected void onResume() {
         super.onResume(); readPadSettings();
+        if (cursor != null) cursor.start();
         if (!polling) { polling = true; ui.postDelayed(poll, 300); ui.postDelayed(rumblePoll, 500); }
     }
     /** profile + camera speed for the pad; called on start/resume and when the controls settings change */
@@ -153,7 +172,91 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         pad.xinput = cprefs.getBoolean("xinput", false);
         pad.lookScale = Math.max(2, Math.min(40, cprefs.getInt("look", 12))) / 10f;
         pad.invertY = cprefs.getBoolean("invertY", false);
+        pad.nintendo = cprefs.getBoolean("nintendo", false);
         rumble = cprefs.getBoolean("rumble", true); rumblePhone = cprefs.getBoolean("rumblePhone", true);
+    }
+
+    /* ---- phone keyboard (v1.1.3) ---- */
+    void toggleKeyboard() {
+        android.view.inputmethod.InputMethodManager im = (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (im == null || kbd == null) return;
+        if (kbdOn) {
+            im.hideSoftInputFromWindow(kbd.getWindowToken(), 0); kbdOn = false; kbd.comp = ""; gameView.requestFocus();
+        } else {
+            kbd.comp = ""; kbd.requestFocus(); im.restartInput(kbd);
+            im.showSoftInput(kbd, android.view.inputmethod.InputMethodManager.SHOW_FORCED); kbdOn = true; imeSeen = false;
+            ui.postDelayed(() -> { if (kbdOn && !imeSeen) im.showSoftInput(kbd, android.view.inputmethod.InputMethodManager.SHOW_FORCED); }, 250);
+        }
+        if (overlay != null) overlay.invalidate();
+        hideBars();
+    }
+    boolean keyboardShown() { return kbdOn; }
+    /** the keyboard was closed with Back or its own button: forget it (called on layout changes and every 300 ms) */
+    private void checkIme() {
+        if (!kbdOn) return;
+        boolean ime = imeVisible();
+        if (ime) imeSeen = true;
+        else if (imeSeen) { imeSeen = false; kbdOn = false; kbd.comp = ""; gameView.requestFocus(); if (overlay != null) overlay.invalidate(); hideBars(); }
+    }
+    private boolean imeVisible() {
+        View decor = getWindow().getDecorView();
+        if (Build.VERSION.SDK_INT >= 30) try {   /* WindowInsets.isVisible(Type.ime()) - API 30, the APK is built against 29 */
+            android.view.WindowInsets in = decor.getRootWindowInsets();
+            if (in != null) {
+                int t = (Integer) Class.forName("android.view.WindowInsets$Type").getMethod("ime").invoke(null);
+                return (Boolean) android.view.WindowInsets.class.getMethod("isVisible", int.class).invoke(in, t);
+            }
+        } catch (Throwable ignored) { }
+        android.graphics.Rect r = new android.graphics.Rect(); decor.getWindowVisibleDisplayFrame(r);
+        int h = decor.getHeight();
+        return h > 0 && h - r.bottom > h * 0.15f;
+    }
+    /** IME target: text -> the game. comp = the composing text already typed into the game (replaced by backspaces) */
+    static final class KbdSink extends View {
+        String comp = "";
+        KbdSink(android.content.Context c) { super(c); setFocusable(true); setFocusableInTouchMode(true); }
+        @Override public boolean onCheckIsTextEditor() { return true; }
+        @Override public android.view.inputmethod.InputConnection onCreateInputConnection(android.view.inputmethod.EditorInfo o) {
+            o.inputType = android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                    | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+            o.imeOptions = android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI | android.view.inputmethod.EditorInfo.IME_FLAG_NO_FULLSCREEN
+                    | android.view.inputmethod.EditorInfo.IME_ACTION_DONE;
+            return new android.view.inputmethod.BaseInputConnection(this, false) {
+                @Override public boolean commitText(CharSequence t, int pos) { replace(t.toString()); comp = ""; return true; }
+                @Override public boolean setComposingText(CharSequence t, int pos) { replace(t.toString()); return true; }
+                @Override public boolean finishComposingText() { comp = ""; return true; }
+                @Override public boolean deleteSurroundingText(int before, int after) {
+                    for (int i = 0; i < Math.max(1, before); i++) key(KeyEvent.KEYCODE_DEL);
+                    return true;
+                }
+                @Override public boolean sendKeyEvent(KeyEvent e) {
+                    if (e.getAction() == KeyEvent.ACTION_DOWN) nativeKey(e.getKeyCode(), 1, e.getUnicodeChar());
+                    else if (e.getAction() == KeyEvent.ACTION_UP) nativeKey(e.getKeyCode(), 0, 0);
+                    return true;
+                }
+                @Override public boolean performEditorAction(int action) { key(KeyEvent.KEYCODE_ENTER); return true; }
+            };
+        }
+        /** the game holds comp: turn it into t (backspace over the differing tail, type the rest) */
+        void replace(String t) {
+            int k = 0;
+            while (k < comp.length() && k < t.length() && comp.charAt(k) == t.charAt(k)) k++;
+            for (int i = comp.length(); i > k; i--) key(KeyEvent.KEYCODE_DEL);
+            type(t.substring(k)); comp = t;
+        }
+        private static final android.view.KeyCharacterMap KCM = android.view.KeyCharacterMap.load(android.view.KeyCharacterMap.VIRTUAL_KEYBOARD);
+        static void type(String t) {
+            for (int i = 0; i < t.length(); i++) {
+                char ch = t.charAt(i);
+                if (ch == '\n') { key(KeyEvent.KEYCODE_ENTER); continue; }
+                KeyEvent[] ev = ch < 128 ? KCM.getEvents(new char[] { ch }) : null;
+                if (ev != null && ev.length > 0) {
+                    for (KeyEvent e : ev) nativeKey(e.getKeyCode(), e.getAction() == KeyEvent.ACTION_DOWN ? 1 : 0,
+                            e.getAction() == KeyEvent.ACTION_DOWN ? e.getUnicodeChar(e.getMetaState()) : 0);
+                } else if (!Character.isSurrogate(ch)) nativeChar(ch);
+            }
+        }
+        static void key(int code) { nativeKey(code, 1, 0); nativeKey(code, 0, 0); }
     }
 
     /* ---- physical gamepads ---- */
@@ -217,6 +320,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             long[] s = null;
             try { s = nativeStatus(); } catch (Throwable ignored) { }
             if (s != null && s.length >= 10) showStatus(s);
+            checkIme();
             if (fps != null && s != null && s[0] != 0) {
                 long[] p = null;
                 try { p = nativePerf(); } catch (Throwable ignored) { }

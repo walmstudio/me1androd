@@ -254,7 +254,7 @@ J252|exception log (SEH / C++)
 J253|registry access log
 J254|list all unimplemented Windows functions
 J255|do not reuse freed memory (bug hunting; memory grows!)
-J256|turn off the PhysX memory watchdog (watches 12283ce0 by default)
+J256|turn on the PhysX memory watchdog (watches 12283ce0; off by default since v1.1)
 J257|close the game N seconds after the first frame
 J258|close the game after N frames
 J259|Set by the launcher (can be overridden)
@@ -448,3 +448,15 @@ X2|Also switch the in-game text language to
 X3|? The game folder must contain this language's localization files.
 X4|Yes
 X5|No
+S90|Lens flares
+S91|LensFlares: flares and halos of the sun and lamps. Turn off if they are too bright or distracting
+S92|Glow (bloom)
+S93|Bloom: a halo around bright areas. Turn off if the picture looks hazy or you need more FPS on a weak GPU
+J306|On-screen button layout
+J307|Standard: PC keys (or an Xbox pad with the mod), stick, free area = camera
+J308|Like the Skyrim port: A/B/X/Y, bumpers and triggers, Back/Start, the whole left half of the screen is the stick, keyboard button
+J309|Left half of the screen = stick, right half = camera, short tap = click; ⌨ = phone keyboard. Buttons reach the game as an Xbox gamepad (“XInput gamepad” is on, requires the ME1Controller mod).
+J310|Left half of the screen = stick, right half = camera, short tap = click; ⌨ = phone keyboard. Without the mod the buttons act as keyboard and mouse: A = E, B = Q, X = Space, Y = F, LB = R, RB = Shift, LT = RMB, RT = LMB, Back = M, Start = Esc. With the ME1Controller mod, turn on “XInput gamepad”.
+J311|Nintendo layout on a physical gamepad (A/B and X/Y swapped)
+J312|⌨ Phone keyboard
+J313|occlusion queries: 1 = default, as in D3D9: hidden objects are culled, lens flares don't shine through walls; 2 = never wait for the GPU (result one frame late, if 1 stutters); 0 = off (everything counts as visible, as before v1.1.3)

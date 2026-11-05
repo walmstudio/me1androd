@@ -365,3 +365,15 @@ X2|¿Cambiar también el idioma del texto en el juego a
 X3|? La carpeta del juego debe tener los archivos de localización de este idioma.
 X4|Sí
 X5|No
+S90|Destellos de lente
+S91|LensFlares: destellos y halos del sol y las lámparas. Desactívalos si son demasiado brillantes o molestan
+S92|Resplandor (bloom)
+S93|Bloom: halo alrededor de las zonas brillantes. Desactívalo si la imagen se ve con neblina o necesitas más FPS en una GPU débil
+J306|Disposición de los botones en pantalla
+J307|Estándar: teclas de PC (o mando Xbox con el mod), stick, zona libre = cámara
+J308|Como en el port de Skyrim: A/B/X/Y, botones superiores y gatillos, Back/Start, toda la mitad izquierda de la pantalla es el stick, botón de teclado
+J309|Mitad izquierda de la pantalla = stick, mitad derecha = cámara, toque corto = clic; ⌨ = teclado del teléfono. Los botones llegan al juego como un mando Xbox («Mando XInput» activado, requiere el mod ME1Controller).
+J310|Mitad izquierda de la pantalla = stick, mitad derecha = cámara, toque corto = clic; ⌨ = teclado del teléfono. Sin el mod los botones funcionan como teclado y ratón: A = E, B = Q, X = Espacio, Y = F, LB = R, RB = Shift, LT = botón derecho, RT = botón izquierdo, Back = M, Start = Esc. Con el mod ME1Controller, activa «Mando XInput».
+J311|Disposición Nintendo en un mando físico (A/B y X/Y intercambiados)
+J312|⌨ Teclado del teléfono
+J313|consultas de oclusión: 1 = por defecto, como en D3D9: lo oculto se descarta, los destellos de lente no atraviesan paredes; 2 = no esperar nunca a la GPU (resultado con un fotograma de retraso, si con 1 hay tirones); 0 = desactivado (todo se considera visible, como antes de v1.1.3)

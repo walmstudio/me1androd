@@ -179,6 +179,17 @@ JNIEXPORT void JNICALL FN(nativeMouseRel)(JNIEnv* e, jclass cl, jfloat dx, jfloa
     int ix = (int)rx, iy = (int)ry; rx -= (float)ix; ry -= (float)iy;
     hle_ui_mouse_rel(ix, iy);
 }
+/* v1.1.5: the game's cursor for CursorView: -1 no window yet, else (state + 1) << 42 | x << 21 | y, state 1 shown / 0 hidden
+ * (hle_ui_cursor: the Windows cursor the game shows in menus and hides while it captures the mouse), x/y in window pixels */
+JNIEXPORT jlong JNICALL FN(nativeCursor)(JNIEnv* e, jclass cl) {
+    (void)e; (void)cl;
+    int cx, cy, cw, ch, vx, vy, vw, vh, fw, fh;
+    int s = hle_ui_cursor(&cx, &cy, &cw, &ch);
+    if (s < 0 || cw <= 0 || ch <= 0 || !me1gl_get_view(&vx, &vy, &vw, &vh, &fw, &fh) || vw <= 0 || vh <= 0) return -1;
+    int64_t x = vx + ((int64_t)cx * vw + vw / 2) / cw, y = vy + ((int64_t)cy * vh + vh / 2) / ch;
+    if (x < 0) x = 0; if (y < 0) y = 0;
+    return ((jlong)(s + 1) << 42) | ((jlong)(x & 0x1FFFFF) << 21) | (jlong)(y & 0x1FFFFF);
+}
 JNIEXPORT void JNICALL FN(nativeMouseButton)(JNIEnv* e, jclass cl, jint button, jint down) {
     hle_ui_mouse_button(button == 1 ? (down ? 3 : 4) : (down ? 1 : 2));   /* 0 left, 1 right */
 }
@@ -225,6 +236,8 @@ JNIEXPORT void JNICALL FN(nativeKey)(JNIEnv* e, jclass cl, jint code, jint down,
     if (shift) hle_ui_key(0x10 + (vk - 0xA0) / 2, 0, down, 0);   /* generic VK_SHIFT / VK_CONTROL / VK_MENU message */
     hle_ui_key(vk, dik, down, uni > 0 && uni < 0x10000 ? uni : 0);
 }
+/* v1.1.3: a character typed on the phone keyboard that has no PC key (e.g. Cyrillic) -> WM_CHAR */
+JNIEXPORT void JNICALL FN(nativeChar)(JNIEnv* e, jclass cl, jint ch) { (void)e; (void)cl; hle_ui_char(ch); }
 /* gamepad (physical or on-screen) -> XInput pad 0: XINPUT_GAMEPAD button mask, triggers 0..255, sticks -32768..32767 */
 JNIEXPORT void JNICALL FN(nativePad)(JNIEnv* e, jclass cl, jint buttons, jint lt, jint rt, jint lx, jint ly, jint rx, jint ry) {
     hle_xinput_set((unsigned)buttons, lt, rt, lx, ly, rx, ry);
