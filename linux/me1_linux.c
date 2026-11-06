@@ -43,9 +43,10 @@ void me1gl_set_window(void* win);
 int  me1gl_get_view(int* x, int* y, int* w, int* h, int* fw, int* fh);
 void me1_status(int64_t o[10]);
 void me1_perf(int64_t o[4]);
+int  gm_hud(char* out, size_t cap);   /* v1.2.1 GEARMASS indicator (runtime/gearmass.c) */
 void hle_hb_now(const char* why);
 
-#define ME1_LINUX_VERSION "1.1.5"
+#define ME1_LINUX_VERSION "1.2.1"
 static const char* const RENDERER_NAMES[4] = { "—", "OpenGL ES", "OpenGL ES (zink)", "Vulkan" };
 
 /* ------------------------------------------------------------------------------------------------ options --- */
@@ -74,6 +75,7 @@ static void usage(FILE* f) {
         "  --screen WxH       «рабочий стол», который видит игра (по умолчанию — режим монитора)\n"
         "  --fps-limit N      ограничение частоты кадров (0 — без ограничения)\n"
         "  --show-fps         FPS и рендерер в заголовке окна (или «Показывать FPS» в me1cfg: port.show_fps=1)\n"
+        "  --gearmass РЕЖИМ   нагрузка: auto (по умолчанию), eco, balance, perf, max, custom, off (= ME1_GEARMASS, me1cfg: port.gearmass)\n"
         "  --mods A:B         моды (папки), как ME1_MODS\n"
         "  --no-grab          не захватывать мышь (курсор системы; обзор мышью хуже)\n"
         "  --video x11|wayland  оконная система (по умолчанию — выбор SDL)\n"
@@ -136,6 +138,7 @@ static void parse_args(int argc, char** argv) {
         else if (!strcmp(a, "--fps-limit")) O.fps_limit = atoi(NEXT());
         else if (!strcmp(a, "--mods")) O.mods = NEXT();
         else if (!strcmp(a, "--show-fps")) O.show_fps = 1;
+        else if (!strcmp(a, "--gearmass")) setenv("ME1_GEARMASS", NEXT(), 1);   /* v1.2.1 */
         else if (!strcmp(a, "--no-grab")) O.grab = 0;
         else if (!strcmp(a, "--video")) O.video = NEXT();
         else if (!strcmp(a, "--x11")) O.video = "x11";
@@ -662,6 +665,20 @@ static void port_env(const char* docs) {
     if ((me1cfg_port_get(docs, "port.show_fps", v, sizeof v) && !strcmp(v, "1")) || (getenv("ME1_SHOW_FPS") && !strcmp(getenv("ME1_SHOW_FPS"), "1"))) O.show_fps = 1;
     if (O.fps_limit >= 0) { snprintf(v, sizeof v, "%d", O.fps_limit); setenv("ME1_FPS_LIMIT", v, 1); }
     else if (port_explicit(docs, "FpsLimit") && me1cfg_port_get(docs, "port.fps_limit", v, sizeof v) && atoi(v) > 0) setenv("ME1_FPS_LIMIT", v, 0);
+    /* v1.2.1 GEARMASS (launcher -> me1port.ini [Port] Gearmass*): the environment and --gearmass win */
+    char gm[64] = "auto";
+    if (getenv("ME1_GEARMASS") && *getenv("ME1_GEARMASS")) snprintf(gm, sizeof gm, "%s", getenv("ME1_GEARMASS"));
+    else if (me1cfg_port_get(docs, "port.gearmass", v, sizeof v) && *v) { snprintf(gm, sizeof gm, "%s", v); setenv("ME1_GEARMASS", v, 0); }
+    if ((me1cfg_port_get(docs, "port.gm_hud", v, sizeof v) && !strcmp(v, "1")) || (getenv("ME1_GM_HUD") && !strcmp(getenv("ME1_GM_HUD"), "1"))) {
+        setenv("ME1_GM_HUD", "1", 0); O.show_fps = 1;   /* the indicator lives in the window title next to the FPS */
+    }
+    if (me1cfg_port_get(docs, "port.gm_thermal", v, sizeof v) && atoi(v) > 0 && atoi(v) != 90) { char t[16]; snprintf(t, sizeof t, "%.2f", atoi(v) / 100.0); setenv("ME1_GM_THERMAL", t, 0); }
+    if (!strcasecmp(gm, "custom")) {
+        static const char* const K[][2] = { { "port.gm_workers", "ME1_GM_WORKERS" }, { "port.gm_ahead", "ME1_GM_AHEAD" }, { "port.gm_spin", "ME1_GM_SPIN" },
+                                            { "port.gm_prime", "ME1_GM_PRIME" }, { "port.gm_aniso", "ME1_GM_ANISO" } };
+        for (unsigned i = 0; i < sizeof K / sizeof K[0]; i++)
+            if (me1cfg_port_get(docs, K[i][0], v, sizeof v) && *v && strcmp(v, "auto")) setenv(K[i][1], v, 0);
+    }
 }
 
 /* v1.1 defaults of the desktop: Vulkan when a GPU has it (and the SPIR-V compiler is there), exact D3D9 float rules */
@@ -874,7 +891,11 @@ int main(int argc, char** argv) {
             title_at = now;
             int64_t p[4] = { 0 }, s[10] = { 0 }; me1_perf(p); me1_status(s);
             char t[256]; int n = snprintf(t, sizeof t, "Mass Effect");
-            if (O.show_fps && p[0] > 0) n += snprintf(t + n, sizeof t - n, " - %lld FPS, %s", (long long)((p[0] + 5) / 10), RENDERER_NAMES[p[2] & 3]);
+            if (O.show_fps && p[0] > 0) {
+                n += snprintf(t + n, sizeof t - n, " - %lld FPS, %s", (long long)((p[0] + 5) / 10), RENDERER_NAMES[p[2] & 3]);
+                char gm[160]; if (gm_hud(gm, sizeof gm) && n < (int)sizeof t - 8) n += snprintf(t + n, sizeof t - n, " - %s", gm);   /* v1.2.1 GEARMASS line */
+                if (n >= (int)sizeof t) n = (int)sizeof t - 1;
+            }
             if (s[3]) n += snprintf(t + n, sizeof t - n, " - compiling shaders...");
             if (!g_grabbed && O.grab && n < (int)sizeof t - 40) snprintf(t + n, sizeof t - n, " - click to capture the mouse");
             static char last[256];
