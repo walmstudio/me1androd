@@ -17,6 +17,15 @@ REG16 = {X86_REG_AX:'eax',X86_REG_CX:'ecx',X86_REG_DX:'edx',X86_REG_BX:'ebx',
          X86_REG_SP:'esp',X86_REG_BP:'ebp',X86_REG_SI:'esi',X86_REG_DI:'edi'}
 REG8L = {X86_REG_AL:'eax',X86_REG_CL:'ecx',X86_REG_DL:'edx',X86_REG_BL:'ebx'}
 REG8H = {X86_REG_AH:'eax',X86_REG_CH:'ecx',X86_REG_DH:'edx',X86_REG_BH:'ebx'}
+PARENT32 = dict([(r, r) for r in REG32] + [(r16, r32) for r16, r32 in zip(REG16, REG32)] +
+                [(X86_REG_AL, X86_REG_EAX), (X86_REG_CL, X86_REG_ECX), (X86_REG_DL, X86_REG_EDX), (X86_REG_BL, X86_REG_EBX),
+                 (X86_REG_AH, X86_REG_EAX), (X86_REG_CH, X86_REG_ECX), (X86_REG_DH, X86_REG_EDX), (X86_REG_BH, X86_REG_EBX)])
+def written_regs(i):
+    """32-bit GP registers an instruction writes (explicitly or implicitly); conservative when capstone cannot tell"""
+    try: w = list(i.regs_access()[1])
+    except Exception: w = list(i.regs_write) + [op.reg for op in i.operands if op.type == 1]   # every register operand
+    if i.id in (X86_INS_CMPXCHG, X86_INS_CMPXCHG8B): w += [X86_REG_EAX, X86_REG_EDX]   # not reported by capstone
+    return set(PARENT32[r] for r in w if r in PARENT32)
 SEGSEL = {X86_REG_CS:'0x1Bu',X86_REG_DS:'0x23u',X86_REG_ES:'0x23u',X86_REG_SS:'0x23u',X86_REG_FS:'0x3Bu',X86_REG_GS:'0u'}
 UT = {1:'uint8_t',2:'uint16_t',4:'uint32_t'}
 ST = {1:'int8_t',2:'int16_t',4:'int32_t'}
@@ -46,6 +55,7 @@ class Recompiler:
         self._lk = None         # inside a LOCK CAS loop: memory operand -> o_ (read) / n_ (write)
         self.eh = ehscan.EHInfo()   # exception landing targets -> owner functions (filled by discover)
         self.use_eh = True
+        self.local_regs = set()   # registers holding provably stack-derived (thread-private) addresses
     # ---------- decoding ----------
     def insn(self, va):
         rva = va - self.pe.base
@@ -169,10 +179,13 @@ class Recompiler:
         elif mem.segment == X86_REG_GS: raise Unsupported('gs')
         return e
     def is_stack(self, mem):
-        """thread-private memory: the stack ([esp+..], [ebp+..] in standard frames) and the TEB (fs:)."""
+        """thread-private memory: the stack ([esp+..], [ebp+..] in standard frames), the TEB (fs:),
+        or an address held in a register proven to point at stack memory."""
         if mem.segment == X86_REG_FS: return True
         if mem.base == X86_REG_ESP: return True
-        return mem.base == X86_REG_EBP and self.fp_frame
+        if mem.base == X86_REG_EBP and self.fp_frame: return True
+        if mem.base in self.local_regs: return True
+        return False
     def mem_fn(self, kind, mem, size):
         # x86 TSO for shared memory: rdoN/wroN (acquire/release), plain rdN/wrN for thread-private memory
         return '%s%s%d' % (kind, '' if self.is_stack(mem) else 'o', 8 * size)
@@ -216,6 +229,27 @@ class Recompiler:
         S = ops[0].size if ops else 4; T = UT.get(S, 'uint32_t'); B = 8*S - 1
         nxt = i.address + i.size
         E = out.append
+        # -------- track registers holding stack-derived (thread-private) addresses --------
+        # v1.2: every register the instruction writes (explicit, implicit - cdq/mul/div/xchg/cmpxchg/lods/popad/cpuid -,
+        # 8/16-bit sub-registers) loses the mark; only lea/mov/add/sub below can (re)establish it. EBP counts as a stack
+        # base only in functions with a standard frame.
+        mark = None
+        if I == X86_INS_LEA and ops[0].type == X86_OP_REG and ops[0].reg in REG32:
+            mem = ops[1].mem
+            base_ok = mem.base == X86_REG_ESP or (mem.base == X86_REG_EBP and self.fp_frame) or mem.base in self.local_regs
+            idx_ok = mem.index == 0 or mem.index in self.local_regs
+            if mem.segment == 0 and base_ok and idx_ok: mark = ops[0].reg
+        elif I == X86_INS_MOV and len(ops) == 2 and ops[0].type == X86_OP_REG and ops[1].type == X86_OP_REG \
+                and ops[0].reg in REG32 and (ops[1].reg in self.local_regs or ops[1].reg == X86_REG_ESP or (ops[1].reg == X86_REG_EBP and self.fp_frame)):
+            mark = ops[0].reg
+        elif I in (X86_INS_ADD, X86_INS_SUB) and len(ops) == 2 and ops[0].type == X86_OP_REG and ops[1].type == X86_OP_IMM \
+                and ops[0].reg in self.local_regs:
+            mark = ops[0].reg
+        if I == X86_INS_CALL or I in (X86_INS_POPAL, X86_INS_INT, X86_INS_INT3):
+            self.local_regs.clear()   # conservative: callee may clobber anything
+        elif self.local_regs:
+            for r in written_regs(i): self.local_regs.discard(r)
+        if mark is not None: self.local_regs.add(mark)
         def label(t): return 'L_%x' % t
         def jump(t):
             if t in body: return 'goto %s;' % label(t)
@@ -542,7 +576,9 @@ class Recompiler:
         if addrs[0] != f: lines.append('  goto L_%x;' % f)
         for k, a in enumerate(addrs):
             i = body[a]
-            if a in targets: lines.append('L_%x:' % a)
+            if a in targets:
+                lines.append('L_%x:' % a)
+                self.local_regs.clear()   # control may jump here from anywhere: drop local-register knowledge
             lines.append('  /* %08x: %s %s */' % (a, i.mnemonic, i.op_str.replace('*/', '* /')))
             self.stats[i.mnemonic] += 1
             try:

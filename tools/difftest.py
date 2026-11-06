@@ -325,9 +325,10 @@ def build(cases, data, workdir):
     with open(os.path.join(workdir, 'cases.bin'), 'wb') as f:
         f.write(struct.pack('<I', len(cases)))
         for s, (pro, c) in zip(starts, cases): f.write(struct.pack('<9I', s, *c.regs))
-    rt = ' '.join([os.path.join(ROOT, 'runtime', x) for x in ('rt.c', 'rt_fp.c', 'hle_win32.c', 'hle_sys.c', 'hle_fs.c', 'hle_thread.c', 'hle_seh.c', 'hle_exe.c', 'hle_vmem.c', 'hle_d3d9.c')] +
+    rt = ' '.join([os.path.join(ROOT, 'runtime', x) for x in ('rt.c', 'rt_fp.c', 'hle_win32.c', 'hle_sys.c', 'hle_fs.c', 'hle_mod.c', 'hle_thread.c', 'hle_seh.c', 'hle_exe.c', 'hle_vmem.c', 'hle_d3d9.c', 'hle_d3d9_cmd.c', 'gearmass.c', 'sm3_glsl.c', 'hle_hb.c', 'hle_input.c', 'hle_al.c')] +
                   [os.path.join(ROOT, 'settings', x) for x in ('ini.c', 'me1settings.c')])
-    cmd = '%s -O1 -w -fwrapv -fno-strict-aliasing -ffp-contract=off -fsigned-char -I%s/runtime -I%s/settings -o %s/harness %s/harness.c %s/tests.c %s -lm -pthread' % (CC, ROOT, ROOT, workdir, workdir, workdir, rt)
+    cmd = '%s -O1 -w -fwrapv -fno-strict-aliasing -ffp-contract=off -fsigned-char -I%s/runtime -I%s/runtime/khr -I%s/settings %s -o %s/harness %s/harness.c %s/tests.c %s -lm -ldl -pthread' % (
+        CC, ROOT, ROOT, ROOT, os.environ.get('DIFFTEST_CFLAGS', ''), workdir, workdir, workdir, rt)   # DIFFTEST_CFLAGS: e.g. -I<Vulkan-Headers>/include
     subprocess.check_call(cmd, shell=True)
     return bytes(img), starts, unimpl
 

@@ -28,6 +28,14 @@ static const SetChoice LANG[] = { {"RU", "Русский"}, {"INT", "Англи�
 static const SetChoice DIFF[] = { {"0", "Лёгкий"}, {"1", "Нормальный"}, {"2", "Ветеран"}, {"3", "Хардкор"}, {"4", "Безумие"}, {0, 0} };
 static const SetChoice SCRPCT[] = { {"100", "100% (без масштабирования)"}, {"85", "85%"}, {"75", "75%"}, {"65", "65%"}, {"50", "50%"}, {0, 0} };
 static const SetChoice FPSCAP[] = { {"30", "30 кадров/с"}, {"45", "45 кадров/с"}, {"60", "60 кадров/с"}, {"0", "Без ограничения"}, {0, 0} };
+/* v1.2.1 GEARMASS (runtime/gearmass.c): load governor of the port -> ME1_GEARMASS / ME1_GM_* (exported by the launchers) */
+static const SetChoice GMMODE[] = { {"auto", "Авто — по замерам (рекомендуется)"}, {"eco", "Эконом — меньше нагрев и расход батареи"},
+    {"balance", "Баланс"}, {"perf", "Производительность"}, {"max", "Максимум"}, {"custom", "Своя — параметры ниже"},
+    {"off", "Выключено — как в 1.2"}, {0, 0} };
+static const SetChoice GMWORK[] = { {"auto", "Авто"}, {"0", "0 — без рабочих потоков"}, {"1", "1"}, {"2", "2"}, {"3", "3"}, {"4", "4"},
+    {"6", "6"}, {"8", "8"}, {0, 0} };
+static const SetChoice GMSPIN[] = { {"0", "Сон (экономно)"}, {"1", "Короткий спин"}, {"2", "Спин (быстрее, горячее)"}, {0, 0} };
+static const SetChoice GMANISO[] = { {"1", "Как в настройках игры"}, {"2", "2×"}, {"4", "4×"}, {"8", "8×"}, {"16", "16×"}, {0, 0} };
 
 #define WC "WinDrv.WindowsClient"
 const SettingDef me1_settings[] = {
@@ -105,6 +113,31 @@ const SettingDef me1_settings[] = {
         "(ini <секция> <ключ> <значение>), запись байтов в память игры (patch <адрес> <байты>). Заготовку создаёт "
         "генератор: me1cfg --game ... modgen balanced|aggressive|off. Осторожно: лимиты и патчи меняют картинку",
         SF_PORT, "Port", "PhoneMod", 0, 0, ST_BOOL01, "0", 0, 0, 0},
+    {"port.gearmass", "Нагрузка (GEARMASS)", "Режим нагрузки", "GEARMASS распределяет работу порта по ядрам и следит за нагревом. "
+        "«Авто» сам выбирает режим по замерам во время игры (загрузка ядер и GPU, нагрев), без списков устройств. "
+        "«Эконом» — меньше потоков и ожидания сном, 30 кадров/с; «Максимум» — все свободные ядра, кадр вперёд для GPU, быстрые ядра. "
+        "«Своя» — параметры ниже. ME1_GEARMASS",
+        SF_PORT, "Port", "Gearmass", 0, 0, ST_ENUM, "auto", 0, 0, GMMODE},
+    {"port.gm_hud", "Нагрузка (GEARMASS)", "Индикатор GEARMASS", "Строка под счётчиком FPS: режим, что тормозит (CPU/GPU/ожидание), "
+        "занятые ядра, загрузка GPU, нагрев. ME1_GM_HUD",
+        SF_PORT, "Port", "GearmassHud", 0, 0, ST_BOOL01, "0", 0, 0, 0},
+    {"port.gm_thermal", "Нагрузка (GEARMASS)", "Порог нагрева, %", "«Авто» снижает нагрузку на шаг, когда запас по нагреву системы доходит "
+        "до этого порога (раньше, чем включится системный троттлинг). Меньше — прохладнее. ME1_GM_THERMAL",
+        SF_PORT, "Port", "GearmassThermal", 0, 0, ST_INT, "90", 60, 100, 0},
+    {"port.gm_workers", "Нагрузка (GEARMASS)", "Своя: рабочие потоки", "Потоки для распаковки текстур и компиляции шейдеров. "
+        "«Авто» — все свободные ядра. ME1_GM_WORKERS",
+        SF_PORT, "Port", "GearmassWorkers", 0, 0, ST_ENUM, "auto", 0, 0, GMWORK},
+    {"port.gm_ahead", "Нагрузка (GEARMASS)", "Своя: кадров вперёд", "Сколько кадров CPU может готовить, пока GPU рисует предыдущий: "
+        "0 — меньше задержка, 2 — GPU не простаивает. ME1_GM_AHEAD",
+        SF_PORT, "Port", "GearmassAhead", 0, 0, ST_INT, "1", 0, 2, 0},
+    {"port.gm_spin", "Нагрузка (GEARMASS)", "Своя: ожидание потоков", "Как главные потоки игры ждут друг друга. ME1_GM_SPIN",
+        SF_PORT, "Port", "GearmassSpin", 0, 0, ST_ENUM, "1", 0, 0, GMSPIN},
+    {"port.gm_prime", "Нагрузка (GEARMASS)", "Своя: быстрые ядра", "Логика и рендер игры — на самых быстрых ядрах "
+        "(по частотам ядер), остальное — на прочих. ME1_GM_PRIME",
+        SF_PORT, "Port", "GearmassPrime", 0, 0, ST_BOOL01, "0", 0, 0, 0},
+    {"port.gm_aniso", "Нагрузка (GEARMASS)", "Своя: анизотропия, мин.", "Минимальная анизотропия текстур. "
+        "В «Производительности» и «Максимуме» её поднимает сам GEARMASS, пока GPU свободен. ME1_GM_ANISO",
+        SF_PORT, "Port", "GearmassAniso", 0, 0, ST_ENUM, "1", 0, 0, GMANISO},
 };
 const int me1_nsettings = sizeof me1_settings / sizeof me1_settings[0];
 

@@ -12,7 +12,9 @@
  * three present slots; a presenter thread (own context) blits it letterboxed to the window (Android: me1gl_set_window).
  * Env: ME1_GL=0 null backend | 1 (default when EGL/GLES load), ME1_GL_DEBUG=1 (glGetError checks, shader logs),
  *      ME1_FRAME_DUMP=dir (PNG of presented frames), ME1_FRAME_DUMP_EVERY=n (default 60), ME1_GLSL_DUMP=dir (programs),
- *      ME1_TEX_MAXSIZE=n (skip top mip levels above n), ME1_TEX_16=0|1|2 (CPU-decoded DXT1 -> RGB5A1 (default 1), 2: DXT3/5 -> RGBA4 too),
+ *      ME1_TEX_MAXSIZE=n (skip top mip levels above n), ME1_TEX_16=0|1|2|3 (CPU-decoded DXT1 -> RGB5A1 (default 1), 2: DXT3/5 -> RGBA4 too,
+ *      3: DXT1 -> RGB565 - one more green bit, the 1-bit alpha of DXT1 cut-outs is lost), ME1_TEX_BC=0|1|2 (v1.2.1, both renderers:
+ *      2 = BC1-5 natively where the driver has them (default), 1 = BC4/5 (ATI1/2) decoded on the CPU, 0 = all DXT/ATI decoded),
  *      ME1_GL_NOS3TC=1 / ME1_GL_NORGTC=1 (force CPU decoding), ME1_GL_CACHE=dir (program binaries),
  *      ME1_GL_FAKEWIN=WxH (presenter draws into a pbuffer "window": tests without a display). */
 #define GL_GLES_PROTOTYPES 0
@@ -117,13 +119,13 @@ EGLF(EGL_DECL)
 
 /* ---- backend state ---- */
 static EGLDisplay g_dpy; static EGLConfig g_cfg; static EGLContext g_ctx0; static int g_surfless, g_winbit;
-static struct { int s3tc, rgtc, aniso, border, flin, maski, nbin, es32, mirror; float maxaniso; int maxtex; } GX;
+static struct { int s3tc, rgtc, aniso, border, flin, maski, nbin, es32, mirror, pcomp; float maxaniso; int maxtex; } GX;
 static struct { uint64_t draws, skipped, texup, texbytes, bufup, bufbytes, ring, progs, progfail, progbin, fbos, clears, blits, shfail, shtrans, decoded, rhw; int64_t texmem; double tbuilt; } GS;   /* v0.10.12 (P0-8): texmem signed - the log showed a wrap to 2^64 */
 static void texmem_add(int64_t v) {
     GS.texmem += v;
     if (GS.texmem < 0) { static int k; if (k++ < 3) fprintf(stderr, "[gl] texmem accounting went negative (%lld) - a double free or a changed size\n", (long long)GS.texmem); GS.texmem = 0; }
 }
-static int g_gldbg, g_texmax, g_tex16, g_dumpevery = 60; static const char* g_fdump; static const char* g_glsldump; static char g_bincache[900];
+static int g_gldbg, g_texmax, g_tex16, g_texbc = 2, g_dumpevery = 60; static const char* g_fdump; static const char* g_glsldump; static char g_bincache[900];
 static uint32_t g_serial;
 
 typedef struct { uint64_t k[5]; GLuint fbo; uint32_t tick; } FboEnt;
@@ -465,7 +467,8 @@ static int gl_init(void) {
     if (!gl_load()) { if (!g_zink) return 0; gpu_driver_fallback("libEGL_mesa / libGLESv2_mesa not loaded"); if (!gl_load()) return 0; }
     g_gldbg = (e = getenv("ME1_GL_DEBUG")) ? atoi(e) : 0;
     if ((e = getenv("ME1_TEX_MAXSIZE")) && atoi(e) >= 16) g_texmax = atoi(e);
-    g_tex16 = (e = getenv("ME1_TEX_16")) ? atoi(e) : 1;   /* CPU-decoded DXT: 1 = DXT1 -> RGB5A1, 2 = also DXT3/5 -> RGBA4 */
+    g_tex16 = (e = getenv("ME1_TEX_16")) ? atoi(e) : 1;   /* CPU-decoded DXT: 1 = DXT1 -> RGB5A1, 2 = also DXT3/5 -> RGBA4, 3 = DXT1 -> RGB565 */
+    if ((e = getenv("ME1_TEX_BC")) && *e >= '0' && *e <= '2') g_texbc = *e - '0';   /* v1.2.1: 2 native BC1-5, 1 native BC1-3, 0 CPU decode */
     if ((e = getenv("ME1_FRAME_DUMP")) && *e) { g_fdump = e; mkdir(e, 0755); }
     if ((e = getenv("ME1_FRAME_DUMP_EVERY")) && atoi(e) > 0) g_dumpevery = atoi(e);
     if ((e = getenv("ME1_GLSL_DUMP")) && *e) { g_glsldump = e; mkdir(e, 0755); }
@@ -491,6 +494,12 @@ static int gl_init(void) {
     GX.maski = glColorMaski != NULL && (GX.es32 || has_ext(ex, "GL_EXT_draw_buffers_indexed") || has_ext(ex, "GL_OES_draw_buffers_indexed"));
     GX.mirror = has_ext(ex, "GL_EXT_texture_mirror_clamp_to_edge");
     if (GX.aniso) glGetFloatv(XMAXANISO, &GX.maxaniso);
+    /* v1.2.1: the driver compiles shaders on its own threads (KHR_parallel_shader_compile; ME1_GL_PARALLEL_COMPILE=0 off) */
+    const char* ge = getenv("ME1_GL_PARALLEL_COMPILE");
+    if (has_ext(ex, "GL_KHR_parallel_shader_compile") && !(ge && *ge == '0')) {
+        void (*mx)(GLuint) = (void (*)(GLuint))p_eglGetProcAddress("glMaxShaderCompilerThreadsKHR");
+        if (mx) { mx(0xFFFFFFFFu); GX.pcomp = 1; }
+    }
     gt_init(ex);
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &GX.maxtex);
     GLint vv = 256, pv = 224; glGetIntegerv(GL_MAX_VERTEX_UNIFORM_VECTORS, &vv); glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_VECTORS, &pv);
@@ -502,9 +511,9 @@ static int gl_init(void) {
          "simplified calculation %d (ME1_SHADER_LITE: engine lighting/effects switches, FP16 for _pp values, cheap sRGB, anisotropy <= 2x, mm timer 5 ms, audio 32 kHz)\n", sm3_float_emu, sm3_invariant, sm3_lite);
     if (g_bincache[0] && glGetProgramBinary && glProgramBinary) glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &GX.nbin);
     glog("EGL %d.%d%s; %s | %s | %s\n", g_eglmaj, g_eglmin, g_surfless ? " surfaceless" : "", glGetString(GL_VENDOR), glGetString(GL_RENDERER), ver);
-    glog("s3tc %d rgtc %d aniso %.0f border %d float_linear %d mirror_clamp %d; max texture %d, uniform vectors vs %d ps %d; "
-         "program binaries %s; %d extensions\n", GX.s3tc, GX.rgtc, GX.maxaniso, GX.border, GX.flin, GX.mirror, GX.maxtex, vv, pv,
-         GX.nbin > 0 ? g_bincache : "off", ne);
+    glog("s3tc %d rgtc %d (ME1_TEX_BC %d, ME1_TEX_16 %d) aniso %.0f border %d float_linear %d mirror_clamp %d; max texture %d, uniform vectors vs %d ps %d; "
+         "program binaries %s; parallel shader compile %d; %d extensions\n", GX.s3tc, GX.rgtc, g_texbc, g_tex16, GX.maxaniso, GX.border, GX.flin, GX.mirror, GX.maxtex, vv, pv,
+         GX.nbin > 0 ? g_bincache : "off", GX.pcomp, ne);
     if (g_zink || g_drvinfo[0]) glog("GPU driver: %s%s\n", g_zink ? "Mesa zink on " : "", g_drvinfo[0] ? g_drvinfo : "?");
     if (g_cpupresent) glog("frames reach the window by CPU copy (ANativeWindow_lock)\n");
     if (g_gldbg > 1) glog("extensions: %s\n", ex);
@@ -687,6 +696,37 @@ static void decode_block(int cv, const uint8_t* b, uint8_t o[16][4]) {
     }
 }
 
+/* v1.2.1: CPU decoding of a compressed rect (no BC support in the GPU / ME1_TEX_BC), shared by GLES and Vulkan.
+ * Block rows are independent and every row writes its own pixels: GEARMASS workers take ranges of rows
+ * (gm_parallel_for), the result does not depend on the number of threads. pk: the output pixel packing. */
+enum { PK_RGBA8, PK_R8, PK_RG8, PK_GL5551, PK_565, PK_GL4444, PK_VK1555, PK_VK4444 };
+typedef struct { int cv, pk; uint32_t bsz, bx, ob, ow, pitch; const uint8_t* src; uint8_t* q; } DecJob;
+static void dec_rows(void* ctx, int r0, int r1) {
+    const DecJob* j = ctx; uint8_t* q = j->q;
+    for (uint32_t r = (uint32_t)r0; r < (uint32_t)r1; r++) for (uint32_t c = 0; c < j->bx; c++) {
+        uint8_t px[16][4]; memset(px, 0, sizeof px); decode_block(j->cv, j->src + (size_t)r * j->pitch + (size_t)c * j->bsz, px);
+        for (int i = 0; i < 16; i++) {
+            size_t o = ((size_t)(r * 4 + (uint32_t)i / 4) * j->ow + c * 4 + (uint32_t)i % 4) * j->ob; const uint8_t* v = px[i]; uint16_t u;
+            switch (j->pk) {
+            case PK_RGBA8: memcpy(q + o, v, 4); continue;
+            case PK_R8: q[o] = v[0]; continue;
+            case PK_RG8: q[o] = v[0]; q[o + 1] = v[1]; continue;
+            case PK_GL5551: u = (uint16_t)((v[0] >> 3) << 11 | (v[1] >> 3) << 6 | (v[2] >> 3) << 1 | (v[3] >> 7)); break;
+            case PK_565: u = (uint16_t)((v[0] >> 3) << 11 | (v[1] >> 2) << 5 | (v[2] >> 3)); break;
+            case PK_GL4444: u = (uint16_t)((v[0] >> 4) << 12 | (v[1] >> 4) << 8 | (v[2] >> 4) << 4 | (v[3] >> 4)); break;
+            case PK_VK1555: u = (uint16_t)((v[3] >> 7) << 15 | (v[0] >> 3) << 10 | (v[1] >> 3) << 5 | (v[2] >> 3)); break;
+            default: u = (uint16_t)((v[2] >> 4) << 12 | (v[1] >> 4) << 8 | (v[0] >> 4) << 4 | (v[3] >> 4)); break;   /* PK_VK4444 */
+            }
+            memcpy(q + o, &u, 2);
+        }
+    }
+}
+static void dec_rect(int cv, int pk, uint32_t bsz, uint32_t bx, uint32_t by, uint32_t ob, const uint8_t* src, uint32_t pitch, uint8_t* q) {
+    DecJob j = { cv, pk, bsz, bx, ob, bx * 4, pitch, src, q };
+    int min_rows = (int)(1024 / (bx ? bx : 1)); if (min_rows < 1) min_rows = 1;   /* chunks of >= 1024 blocks (16K pixels) */
+    gm_parallel_for((int)by, dec_rows, &j, min_rows);
+}
+
 /* ---- resources ---- */
 static __thread uint8_t* t_tmp; static __thread size_t t_tmpn;
 static uint8_t* tmpbuf(size_t n) { if (n > t_tmpn) { free(t_tmp); t_tmpn = n + (n >> 2) + 4096; t_tmp = malloc(t_tmpn); } return t_tmp; }
@@ -715,11 +755,12 @@ static GlRes* tex_res(GlCtx* C, Obj* t) {
     g->kind = 1; g->f = gf; g->target = tex_target(t); g->rt = (t->usage & 1) != 0;
     g->ifmt = gf->ifmt; g->fmt = gf->fmt; g->type = gf->type; g->obpp = f->bytes;
     if (is_block(gf->conv)) {
-        int ext = (gf->conv <= CV_DXT5 ? GX.s3tc : GX.rgtc) && g->target != GL_TEXTURE_3D;
+        int ext = (gf->conv <= CV_DXT5 ? GX.s3tc : GX.rgtc) && g->target != GL_TEXTURE_3D && g_texbc >= (gf->conv <= CV_DXT5 ? 1 : 2);
         if (!ext) {
             g->dec = 1;
             if (gf->conv == CV_BC4) { g->ifmt = GL_R8; g->fmt = GL_RED; g->type = GL_UNSIGNED_BYTE; g->obpp = 1; }
             else if (gf->conv == CV_BC5) { g->ifmt = GL_RG8; g->fmt = GL_RG; g->type = GL_UNSIGNED_BYTE; g->obpp = 2; }
+            else if (g_tex16 == 3 && gf->conv == CV_DXT1) { g->ifmt = GL_RGB565; g->fmt = GL_RGB; g->type = GL_UNSIGNED_SHORT_5_6_5; g->obpp = 2; }
             else if (g_tex16 && gf->conv == CV_DXT1) { g->ifmt = GL_RGB5_A1; g->fmt = GL_RGBA; g->type = GL_UNSIGNED_SHORT_5_5_5_1; g->obpp = 2; }
             else if (g_tex16 >= 2) { g->ifmt = GL_RGBA4; g->fmt = GL_RGBA; g->type = GL_UNSIGNED_SHORT_4_4_4_4; g->obpp = 2; }
             else { g->ifmt = GL_RGBA8; g->fmt = GL_RGBA; g->type = GL_UNSIGNED_BYTE; g->obpp = 4; }
@@ -767,21 +808,11 @@ static void tex_upload(GlCtx* C, Obj* t, GlRes* g, uint32_t face, uint32_t lvl, 
             glCompressedTexSubImage2D(tg, gl, (GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h, g->ifmt, (GLsizei)(bx * by * bsz), p);
         } else {
             uint32_t ow = bx * 4, oh = by * 4; uint8_t* q = tmpbuf((size_t)ow * oh * (uint32_t)g->obpp);
+            int pk = g->obpp == 4 ? PK_RGBA8 : g->obpp == 1 ? PK_R8 : g->ifmt == GL_RG8 ? PK_RG8 : g->ifmt == GL_RGB5_A1 ? PK_GL5551 : g->ifmt == GL_RGB565 ? PK_565 : PK_GL4444;
             glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)ow);
             for (uint32_t k = 0; k < dz; k++) {
                 const uint8_t* s0 = src + (size_t)k * slice;
-                for (uint32_t r = 0; r < by; r++) for (uint32_t c = 0; c < bx; c++) {
-                    uint8_t px[16][4]; memset(px, 0, sizeof px); decode_block(f->conv, s0 + (size_t)r * pitch + (size_t)c * bsz, px);
-                    for (int i = 0; i < 16; i++) {
-                        size_t o = ((size_t)(r * 4 + (uint32_t)i / 4) * ow + c * 4 + (uint32_t)i % 4) * (uint32_t)g->obpp; const uint8_t* v = px[i];
-                        if (g->obpp == 4) memcpy(q + o, v, 4);
-                        else if (g->obpp == 1) q[o] = v[0];
-                        else if (g->ifmt == GL_RG8) { q[o] = v[0]; q[o + 1] = v[1]; }
-                        else { uint16_t u = g->ifmt == GL_RGB5_A1 ? (uint16_t)((v[0] >> 3) << 11 | (v[1] >> 3) << 6 | (v[2] >> 3) << 1 | (v[3] >> 7))
-                                                                   : (uint16_t)((v[0] >> 4) << 12 | (v[1] >> 4) << 8 | (v[2] >> 4) << 4 | (v[3] >> 4));
-                               memcpy(q + o, &u, 2); }
-                    }
-                }
+                dec_rect(f->conv, pk, bsz, bx, by, (uint32_t)g->obpp, s0, pitch, q);   /* v1.2.1: on GEARMASS workers */
                 if (is3d) glTexSubImage3D(GL_TEXTURE_3D, gl, (GLint)x, (GLint)y, (GLint)(z + k), (GLsizei)w, (GLsizei)h, 1, g->fmt, g->type, q);
                 else glTexSubImage2D(tg, gl, (GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h, g->fmt, g->type, q);
             }
@@ -826,14 +857,13 @@ static void gl_note_lock(Obj* r, uint32_t s, uint32_t lvl, uint32_t area, int vo
         if (vol) { uint32_t f0 = rd32(area + 16), f1 = rd32(area + 20); if (f0 < f1) { L[4] = f0 < d ? f0 : d; L[5] = f1 < d ? f1 : d; } }
     }
 }
-static void gl_tex_unlock(Obj* r, uint32_t s, uint32_t lvl) {
-    GlCtx* C = gl_cur(); if (!C || !r->lockr || !r->lockv || !r->lockv[s]) return;
-    uint32_t* L = r->lockr + 8 * s;
+/* v1.2.1: L = the lock (lockr row), p = its first byte (tex_lock_src: the guest lock buffer, or the copy in the command stream) */
+static void gl_tex_unlock(Obj* r, uint32_t s, uint32_t lvl, const uint32_t* L, const uint8_t* p) {
+    GlCtx* C = gl_cur(); if (!C || !L || !p) return;
     if (L[6] & 0x10u) return;   /* READONLY */
     GlRes* g = tex_res(C, r); if (!g || g->kind != 1) return;
     uint32_t pitch, rows, unit; int blk; layout(r->fmt, dimv(r->w, lvl), dimv(r->h, lvl), &pitch, &rows, &unit, &blk);
-    uint32_t k = blk ? 4 : 1, face = r->type == T_CUBE ? s / r->levels : 0;
-    const uint8_t* p = M + r->lockv[s] + (size_t)(L[1] / k) * pitch + (size_t)(L[0] / k) * unit + (size_t)L[4] * pitch * rows;
+    uint32_t face = r->type == T_CUBE ? s / r->levels : 0;
     tex_upload(C, r, g, face, lvl, L[0], L[1], L[4], L[2] - L[0], L[3] - L[1], L[5] - L[4], p, pitch, pitch * rows);
 }
 /* static vertex/index buffers */
@@ -960,11 +990,13 @@ static void dump_text(const char* name, const char* a, const char* b, const char
     if (c) { fputs("\n// ---- log ----\n", f); fputs(c, f); }
     fclose(f);
 }
-static GLuint compile_sh(GLenum type, const char* src, char* log, int logn) {
-    GLuint s = glCreateShader(type); glShaderSource(s, 1, &src, NULL); glCompileShader(s);
-    GLint ok = 0; glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
-    if (!ok) { log[0] = 0; glGetShaderInfoLog(s, logn, NULL, log); glDeleteShader(s); return 0; }
-    return s;
+/* v1.2.1: both shaders of a program are submitted before either status is read - with KHR_parallel_shader_compile
+ * (and drivers that compile asynchronously anyway) the vertex and the fragment shader compile in parallel */
+static GLuint sh_begin(GLenum type, const char* src) { GLuint s = glCreateShader(type); glShaderSource(s, 1, &src, NULL); glCompileShader(s); return s; }
+static int sh_end(GLuint* s, char* log, int logn) {
+    GLint ok = 0; glGetShaderiv(*s, GL_COMPILE_STATUS, &ok);
+    if (!ok) { log[0] = 0; glGetShaderInfoLog(*s, logn, NULL, log); glDeleteShader(*s); *s = 0; return 0; }
+    return 1;
 }
 static uint64_t prog_key(const Obj* vs, const Obj* ps) {
     /* v0.10.5: fixed cache version instead of __DATE__/__TIME__ - the build timestamp invalidated every cached
@@ -1025,9 +1057,9 @@ static GlProg* prog_get(GlCtx* C, Obj* vso, Obj* pso) {
     int fromcache = bin_load(P->p, key);
     if (!fromcache) {
         char* vsrc = sm3_glsl_vs(&vs->s, &ps->s); char* psrc = sm3_glsl_ps(&ps->s);
-        static char log[8192]; GLuint a = compile_sh(GL_VERTEX_SHADER, vsrc, log, sizeof log), b = 0;
+        static char log[8192]; GLuint a = sh_begin(GL_VERTEX_SHADER, vsrc), b = sh_begin(GL_FRAGMENT_SHADER, psrc);
         const char* what = "vertex";
-        if (a) { what = "fragment"; b = compile_sh(GL_FRAGMENT_SHADER, psrc, log, sizeof log); }
+        if (sh_end(&a, log, sizeof log)) { what = "fragment"; sh_end(&b, log, sizeof log); }
         if (a && b) {
             glAttachShader(P->p, a); glAttachShader(P->p, b);
             if (GX.nbin && glProgramParameteri) glProgramParameteri(P->p, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
@@ -1127,7 +1159,11 @@ static GLenum wrap_gl(uint32_t a) {
 static GLuint sampler_get(const uint32_t* ss, const GlRes* g, const Obj* t) {
     uint32_t u = ss[1] & 7, v = ss[2] & 7, w = ss[3] & 7, mag = ss[5] & 7, mn = ss[6] & 7, mip = ss[7] & 7;
     int nearest = (is_float_fmt(g->ifmt) && !GX.flin);
-    uint32_t an = 1; if ((mn == 3 || mag == 3) && GX.aniso) { an = ss[10] ? ss[10] : 1; if (an > (uint32_t)GX.maxaniso) an = (uint32_t)GX.maxaniso; if (an > 16) an = 16; if (sm3_lite && an > 2) an = 2; }
+    uint32_t an = 1, af = (uint32_t)gm_k.aniso;   /* v1.2.1: GEARMASS anisotropy floor for mipmapped linear sampling */
+    if (GX.aniso && ((mn == 3 || mag == 3) || (af > 1 && mn >= 2 && mip && !nearest))) {
+        an = (mn == 3 || mag == 3) && ss[10] ? ss[10] : 1; if (an < af) an = af;
+        if (an > (uint32_t)GX.maxaniso) an = (uint32_t)GX.maxaniso; if (an > 16) an = 16; if (sm3_lite && an > 2) an = 2; if (!an) an = 1;
+    }
     int lod = (int)(t->lod > ss[9] ? t->lod : ss[9]) - g->drop; if (lod < 0) lod = 0; if (lod > g->levels - g->drop - 1) lod = g->levels - g->drop - 1; if (lod > 15) lod = 15;
     if (g->levels - g->drop <= 1) mip = 0;
     uint32_t border = (u == 4 || v == 4 || w == 4) ? ss[4] : 0;
@@ -1388,7 +1424,7 @@ static int setup_vertices(GlCtx* C, Dev* d, const Sm3* vs, const DrawCall* dc) {
             GlRes* g = (!dc->up && !vb->shadow) ? buf_res(C, vb) : NULL;
             if (g) { sbuf[s] = g->name; sptr[s] = (int64_t)off0 + srb * stride; }
             else {
-                uint32_t src = dc->up ? dc->upv : vb->shadow;
+                uint32_t src = dc->up ? dc->upv : d->vbsh[s];   /* v1.2.1: the shadow at the draw (Lock may rename it) */
                 uint64_t a = (uint64_t)off0 + (uint64_t)slo * (stride ? stride : 0), len = (uint64_t)(shi - slo) * (stride ? stride : 0);
                 if (!stride) len = 256;
                 if (!dc->up) { if (a >= vb->size) return -1; if (a + len > vb->size) len = vb->size - a; }
@@ -1461,6 +1497,14 @@ static int gles_query_data(Obj* o, uint32_t flags, uint32_t* out) {
     else if (mono() - q->t0 > 0.25) { q_done(q, q_visible(q), 0); *out = q->res; return 1; }
     return 0;
 }
+static int gles_query_available(Obj* o) {   /* v1.2: gles_query_data without flush / wait / timeout */
+    QRes* q = o->gx;
+    if (!q->n || q->ctx != gl_cur() || !glGetQueryObjectuiv) { q_done(q, q_visible(q), 0); return 1; }
+    GLuint av = 0; glGetQueryObjectuiv(q->glq[0], 0x8867 /* GL_QUERY_RESULT_AVAILABLE */, &av);
+    if (!av) return 0;
+    GLuint r = 0; glGetQueryObjectuiv(q->glq[0], 0x8866 /* GL_QUERY_RESULT */, &r);
+    q_done(q, r ? q_area(q) : 0, 1); return 1;
+}
 static void gles_query_free(QRes* q) {
     if (q && q->glq[0] && q->ctx && q->ctx == gl_cur() && glDeleteQueries) glDeleteQueries(1, &q->glq[0]);
 }
@@ -1529,7 +1573,7 @@ static void gl_draw(Dev* d, DrawCall* dc) {
             if (a + len > ib->size) { GS.skipped++; return; }
             GlRes* g = ib->shadow ? NULL : buf_res(C, ib);
             if (g) { s_ebuf(C, g->name); off = (uint32_t)a; }
-            else off = ring_put(C, 1, M + ib->shadow + a, (uint32_t)len, 0);
+            else off = ring_put(C, 1, M + d->ibsh + a, (uint32_t)len, 0);
         }
         if (dc->ninst > 1) glDrawElementsInstanced(mode, (GLsizei)dc->count, it, (const void*)(uintptr_t)off, (GLsizei)dc->ninst);
         else glDrawElements(mode, (GLsizei)dc->count, it, (const void*)(uintptr_t)off);
@@ -1800,7 +1844,7 @@ static void gt_frame(GlCtx* C) {   /* at Present: close this frame's query, coll
         if (!av) break;
         uint64_t ns = 0; GT.get64(GT.q[GT.read & 3], 0x8866 /* GL_QUERY_RESULT */, &ns); GT.read++;
         GLint dj = 0; glGetIntegerv(0x8FBB /* GL_GPU_DISJOINT_EXT */, &dj);
-        if (!dj && ns < 10000000000ull) { GT.ns += ns; GT.nf++; }
+        if (!dj && ns < 10000000000ull) { GT.ns += ns; GT.nf++; gm_gpu_ns(ns, 1); }   /* v1.2.1: GEARMASS sees the GPU time */
     }
     if (GT.issued - GT.read < 4) { GT.begin(0x88BF, GT.q[GT.issued & 3]); GT.active = 1; }
 }

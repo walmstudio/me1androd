@@ -6,7 +6,27 @@ ARM_FLAGS ?= -march=armv8.2-a+rcpc
 override CC := $(CC) -fsigned-char $(ARM_FLAGS)
 endif
 CFLAGS ?= -O1 -g -w -fwrapv -fno-strict-aliasing -Iruntime -Iruntime/khr -Isettings -Iout/physxloader
-RT = runtime/rt.c runtime/rt_fp.c runtime/hle_win32.c runtime/hle_sys.c runtime/hle_fs.c runtime/hle_mod.c runtime/hle_thread.c runtime/hle_seh.c runtime/hle_exe.c runtime/hle_vmem.c runtime/hle_d3d9.c runtime/sm3_glsl.c runtime/hle_hb.c runtime/hle_input.c runtime/hle_al.c settings/ini.c settings/me1settings.c
+
+# v1.2.1: rebuild by content, not only by time. Sources unpacked from an archive keep the archive's timestamps, and
+# those can be OLDER than the objects of the previous build (zip stores local time without a time zone) -> make kept
+# stale runtime objects (libme1game.so: dlopen "cannot locate symbol hle_fs_read_bytes"). build/.srcsum remembers the
+# md5 of every source file; a file whose content changed since the last make gets its mtime set to now, so the normal
+# rules rebuild everything that depends on it. First run (no build/.srcsum yet) with an old build/: the runtime and
+# launcher objects are deleted once (cheap; the recompiled game objects only depend on out/ and runtime/rt.h).
+# SRCSUM=0 disables it.
+ifneq ($(SRCSUM),0)
+SRCSUM_DIRS = runtime settings linux android/jni android/assets/i18n tools
+$(shell mkdir -p build; \
+  find $(SRCSUM_DIRS) -type f \( -name '*.c' -o -name '*.h' -o -name '*.S' -o -name '*.map' -o -name '*.json' -o -name '*.py' -o -name '*.sh' \) \
+    -not -path '*/__pycache__/*' -print0 2>/dev/null | sort -z | xargs -0 md5sum > build/.srcsum.new 2>/dev/null; \
+  if [ -f build/.srcsum ]; then \
+    grep -vxFf build/.srcsum build/.srcsum.new | cut -c35- | while IFS= read -r f; do [ -f "$$f" ] && touch -- "$$f"; done; \
+  elif [ -d build/android/pic/rt ] || [ -d build/linux/rt ]; then \
+    rm -f build/android/pic/rt/*.o build/linux/rt/*.o build/me1cfg build/android/me1cfg build/android/libme1run.so; \
+  fi; \
+  mv -f build/.srcsum.new build/.srcsum)
+endif
+RT = runtime/rt.c runtime/rt_fp.c runtime/hle_win32.c runtime/hle_sys.c runtime/hle_fs.c runtime/hle_mod.c runtime/hle_thread.c runtime/hle_seh.c runtime/hle_exe.c runtime/hle_vmem.c runtime/hle_d3d9.c runtime/hle_d3d9_cmd.c runtime/gearmass.c runtime/sm3_glsl.c runtime/hle_hb.c runtime/hle_input.c runtime/hle_al.c settings/ini.c settings/me1settings.c
 PXL = $(wildcard out/physxloader/*.c)
 build/test_pxl: $(RT) $(PXL) runtime/main_pxl.c runtime/*.h settings/*.h
 	mkdir -p build && $(CC) $(CFLAGS) -o $@ $(RT) $(PXL) runtime/main_pxl.c -lm -ldl -pthread
@@ -55,7 +75,7 @@ build/android/test_fs_static: $(RT) runtime/test_fs.c runtime/*.h settings/*.h
 
 # launcher self-check as CLI (same code as the APK's "Проверить, что увидит игра") and the APK itself
 JDK ?= /usr/lib/jvm/java-17-amazon-corretto.x86_64
-CHK = android/jni/me1check_main.c android/jni/me1port_jni.c runtime/rt.c runtime/rt_fp.c runtime/hle_win32.c runtime/hle_sys.c runtime/hle_fs.c runtime/hle_mod.c runtime/hle_thread.c runtime/hle_seh.c runtime/hle_exe.c runtime/hle_vmem.c runtime/hle_d3d9.c runtime/sm3_glsl.c runtime/hle_hb.c runtime/hle_input.c runtime/hle_al.c $(SET)
+CHK = android/jni/me1check_main.c android/jni/me1port_jni.c runtime/rt.c runtime/rt_fp.c runtime/hle_win32.c runtime/hle_sys.c runtime/hle_fs.c runtime/hle_mod.c runtime/hle_thread.c runtime/hle_seh.c runtime/hle_exe.c runtime/hle_vmem.c runtime/hle_d3d9.c runtime/hle_d3d9_cmd.c runtime/gearmass.c runtime/sm3_glsl.c runtime/hle_hb.c runtime/hle_input.c runtime/hle_al.c $(SET)
 build/me1check: $(CHK) runtime/*.h settings/*.h
 	mkdir -p build && $(CC) $(CFLAGS) -I$(JDK)/include -I$(JDK)/include/linux -o $@ $(CHK) -lm -ldl -pthread
 build/android/me1check_static: $(CHK) runtime/*.h settings/*.h
@@ -187,6 +207,12 @@ build/test_hlsl_gl: $(RT) $(CRT_O) $(DX_O) runtime/test_hlsl_gl.c runtime/*.h
 	mkdir -p build && $(CC) $(CFLAGS) -o $@ $(RT) runtime/test_hlsl_gl.c $(CRT_O) $(DX_O) -lm -ldl -pthread
 build/test_gl: $(RT) runtime/test_gl.c runtime/*.h settings/*.h
 	mkdir -p build && $(CC) $(CFLAGS) -o $@ $(RT) runtime/test_gl.c -lm -ldl -pthread
+
+# v1.2.1: GEARMASS unit test (gearmass.c alone, runtime stubs)
+build/test_gm: runtime/gearmass.c runtime/gearmass.h runtime/test_gm.c
+	mkdir -p build && $(CC) -O1 -g -Wall -Wno-unused-parameter -Iruntime -o $@ runtime/gearmass.c runtime/test_gm.c -lm -pthread
+build/test_cmd: $(RT) runtime/test_cmd.c runtime/*.h settings/*.h
+	mkdir -p build && $(CC) $(CFLAGS) -o $@ $(RT) runtime/test_cmd.c -lm -ldl -pthread
 # v0.9.8: one-ICD Vulkan "loader" for zink (custom drivers without libadrenotools); host copy for ME1_GPU_DRIVER=/path/icd.so tests
 build/libme1vkshim.so: android/jni/vkshim.c
 	mkdir -p build && $(CC) -O2 -shared -fPIC -fvisibility=hidden -o $@ $<

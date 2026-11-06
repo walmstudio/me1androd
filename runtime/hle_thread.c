@@ -11,6 +11,7 @@
  * take the big HLE lock (HLE_NOLOCK): several of them block. */
 #define _GNU_SOURCE
 #include "hle.h"
+#include "gearmass.h"
 #include <pthread.h>
 #include <setjmp.h>
 #include <dirent.h>
@@ -75,7 +76,8 @@ static unsigned g_nthreads_started;
 
 static GThread* self_thread(void) { return t_self ? t_self : &g_main; }
 static uint32_t cur_tid(CPU* c) { return rd32(c->fs_base + 0x24); }
-static void kwake(void) { pthread_cond_broadcast(&g_kcv); }
+static unsigned g_kgen;   /* v1.2.1: bumped by every kwake (g_kmx held): hle_wait's spin (GEARMASS spin 2) sees a wake-up */
+static void kwake(void) { __atomic_add_fetch(&g_kgen, 1, __ATOMIC_RELEASE); pthread_cond_broadcast(&g_kcv); }
 
 /* v0.10.1 CPU placement on big.LITTLE phones (ME1_CPU_PIN, default 1): the game thread (main) and the rendering thread
  * (the one calling Present: UE3 render thread, also Bink decoding) get the fast cores, every other game thread (audio
@@ -91,12 +93,18 @@ static void kwake(void) { pthread_cond_broadcast(&g_kcv); }
  *  - ME1_CPU_PRIME=1: main alone on the fastest core(s) when that tier is separate (X2/X4), render on the other big ones.
  *  - every heavy thread (main, render) is registered for ADPF (performance hint session, see hle_adpf_frame) and,
  *    with ME1_UCLAMP=n (1..1024), gets a utilization floor; ME1_HEAVY_NICE=n sets its nice value. */
-static int g_heavy_tid[2];        /* host tids: [0] main, [1] render */
+static int g_heavy_tid[3];        /* host tids: [0] main, [1] render, [2] D3D9 replay thread (v1.2.1, ME1_D3D_CMD=2) */
 static __thread int t_heavy;      /* 1 on main/render threads: sleep0 may spin there (ME1_SPIN_HEAVY) */
+static __thread int t_role = -1;  /* v1.2.1: 0 main, 1 render, 2 D3D9 replay (index of g_heavy_tid / g_heavy_wait) */
+static uint64_t g_heavy_wait[3];  /* v1.2.1: ns the heavy threads spent in active waits (GEARMASS spin): not real load */
+static void heavy_wait_add(int64_t ns) { if (t_role >= 0 && ns > 0) __atomic_add_fetch(&g_heavy_wait[t_role], (uint64_t)ns, __ATOMIC_RELAXED); }
+uint64_t hle_heavy_wait_ns(int which) { return which >= 0 && which < 3 ? __atomic_load_n(&g_heavy_wait[which], __ATOMIC_RELAXED) : 0; }
+static int64_t now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec; }
+static int gm_spin_us(void);
 #ifdef __linux__
 #include <sys/syscall.h>
 #include <sys/resource.h>
-static cpu_set_t g_cpu_big, g_cpu_little, g_cpu_light, g_cpu_prime, g_cpu_bignp; static int g_cpu_pin = -1, g_cpu_prime_on;
+static cpu_set_t g_cpu_big, g_cpu_little, g_cpu_light, g_cpu_prime, g_cpu_bignp, g_cpu_all; static int g_cpu_pin = -1, g_cpu_prime_on;
 static void cpu_list(const cpu_set_t* s, int n, char* o, size_t cap) {
     size_t k = 0; o[0] = 0;
     for (int i = 0; i < n && k + 12 < cap; i++) if (CPU_ISSET(i, s)) {
@@ -131,7 +139,7 @@ static int cpu_pin_init(void) {
     }
     int nb = CPU_COUNT(&g_cpu_big), nl = CPU_COUNT(&g_cpu_little), np = CPU_COUNT(&g_cpu_prime);
     if (nb < 1 || nl < 1) return 0;
-    CPU_OR(&g_cpu_light, &g_cpu_big, &g_cpu_little);
+    CPU_OR(&g_cpu_light, &g_cpu_big, &g_cpu_little); g_cpu_all = g_cpu_light;
     if (nl >= 3) g_cpu_light = g_cpu_little;   /* enough slow cores for the background threads */
     CPU_ZERO(&g_cpu_bignp);
     for (int i = 0; i < n; i++) if (CPU_ISSET(i, &g_cpu_big) && !CPU_ISSET(i, &g_cpu_prime)) CPU_SET(i, &g_cpu_bignp);
@@ -178,33 +186,91 @@ static void heavy_tune(void) {
 #endif
 }
 #endif
-/* heavy: 0 = other game thread, 1 = render thread (first Present), 2 = guest main thread (run_entry) */
+/* heavy: 0 = other game thread, 1 = render thread (first Present), 2 = guest main thread (run_entry),
+ * 3 = the D3D9 replay thread (v1.2.1, ME1_D3D_CMD=2: placed like the render thread, part of the ADPF session),
+ * 4 = a GEARMASS worker (v1.2.1: like the other game threads) */
+#ifdef __linux__
+static const cpu_set_t* heavy_mask(int heavy) {
+    if (heavy == 0 || heavy == 4) return &g_cpu_light;
+    if (heavy == 3 && CPU_COUNT(&g_cpu_big) < 3) return &g_cpu_all;   /* fewer fast cores than heavy threads: the replay floats */
+    if (!g_cpu_prime_on) return &g_cpu_big;
+    return heavy == 2 ? &g_cpu_prime : &g_cpu_bignp;
+}
+#endif
 void hle_cpu_place(int heavy) {
     static __thread int placed = -1;
     if (placed == heavy) return;
     placed = heavy;
     int tid = (int)gettid();
-    if (heavy) {
-        t_heavy = 1;
-        __atomic_store_n(&g_heavy_tid[heavy == 2 ? 0 : 1], tid, __ATOMIC_RELEASE);
+    if (heavy && heavy != 4) {
+        t_heavy = 1; t_role = heavy == 2 ? 0 : heavy == 3 ? 2 : 1;
+        __atomic_store_n(&g_heavy_tid[t_role], tid, __ATOMIC_RELEASE);
     }
 #ifdef __linux__
-    if (heavy) heavy_tune();
+    if (heavy && heavy != 4) heavy_tune();
     if (!cpu_pin_init()) return;
-    const cpu_set_t* m = !heavy ? &g_cpu_light : !g_cpu_prime_on ? &g_cpu_big : heavy == 2 ? &g_cpu_prime : &g_cpu_bignp;
+    const cpu_set_t* m = heavy_mask(heavy);
     if (sched_setaffinity(0, sizeof(cpu_set_t), m) == 0) {
         cpu_pin_note((unsigned)tid, heavy);
         static int logs;
-        if (heavy || logs < 3) {
-            if (!heavy) logs++;
+        if ((heavy && heavy != 4) || logs < 3) {
+            if (!heavy || heavy == 4) logs++;
             char l[64]; cpu_list(m, (int)sysconf(_SC_NPROCESSORS_CONF), l, sizeof l);
-            fprintf(stderr, "[hle] pinned tid %d (%s) -> %s\n", tid, heavy == 2 ? "main" : heavy ? "render" : "game thread", l);
+            fprintf(stderr, "[hle] pinned tid %d (%s) -> %s\n", tid, heavy == 2 ? "main" : heavy == 3 ? "d3d replay" : heavy == 4 ? "worker" : heavy ? "render" : "game thread", l);
         }
     }
     else { static int k; if (k++ < 3) fprintf(stderr, "[hle] sched_setaffinity: %s\n", strerror(errno)); }
 #endif
 }
-int hle_heavy_tid(int which) { return __atomic_load_n(&g_heavy_tid[which & 1], __ATOMIC_ACQUIRE); }
+/* v1.2.1 (GEARMASS): the prime core switched on/off at run time - the heavy threads are moved at once */
+void hle_cpu_replace(int prime) {
+#ifdef __linux__
+    if (!cpu_pin_init()) return;
+    int on = prime && CPU_COUNT(&g_cpu_prime) >= 1 && CPU_COUNT(&g_cpu_bignp) >= 1;
+    static int last = -1;
+    int changed = on != g_cpu_prime_on || last < 0;
+    g_cpu_prime_on = on; last = on;
+    static const int role_heavy[3] = { 2, 1, 3 };
+    char msg[160]; size_t k = 0; msg[0] = 0;
+    for (int r = 0; r < 3; r++) {
+        int tid = hle_heavy_tid(r); if (!tid) continue;
+        const cpu_set_t* m = heavy_mask(role_heavy[r]);
+        if (sched_setaffinity((pid_t)tid, sizeof(cpu_set_t), m) == 0 && k + 40 < sizeof msg) {
+            char l[48]; cpu_list(m, (int)sysconf(_SC_NPROCESSORS_CONF), l, sizeof l);
+            k += (size_t)snprintf(msg + k, sizeof msg - k, "%s%s %d -> %s", k ? ", " : "", r == 0 ? "main" : r == 1 ? "render" : "d3d", tid, l);
+        }
+    }
+    if (changed && msg[0]) fprintf(stderr, "[gearmass] placement: prime %s: %s\n", on ? "on" : "off", msg);
+#else
+    (void)prime;
+#endif
+}
+/* v1.2.1 (GEARMASS): utilization floor of the heavy threads (uclamp.min; 0 removes it) */
+void hle_cpu_uclamp(int v) {
+#if defined(__linux__) && defined(SYS_sched_setattr)
+    if (v < 0) v = 0;
+    if (v > 1024) v = 1024;
+    char msg[120]; size_t k = 0; msg[0] = 0; static int fails, dead;
+    if (dead) return;
+    for (int r = 0; r < 3 && !dead; r++) {
+        int tid = hle_heavy_tid(r); if (!tid) continue;
+        struct me1_sched_attr a; memset(&a, 0, sizeof a); a.size = sizeof a;
+        a.sched_flags = 0x08 | 0x10 | 0x20;   /* KEEP_POLICY | KEEP_PARAMS | UTIL_CLAMP_MIN */
+        a.sched_util_min = (uint32_t)v;
+        long rc = syscall(SYS_sched_setattr, tid, &a, 0);
+        if (rc) {
+            int er = errno;
+            if (fails++ < 3) fprintf(stderr, "[gearmass] uclamp.min %d for tid %d: %s\n", v, tid, strerror(er));
+            if (er == EOPNOTSUPP || er == ENOSYS || er == E2BIG) { dead = 1; fprintf(stderr, "[gearmass] the kernel has no uclamp: utilization floor off\n"); }
+        }
+        else if (k + 16 < sizeof msg) k += (size_t)snprintf(msg + k, sizeof msg - k, "%s%d", k ? "," : "", tid);
+    }
+    if (msg[0]) fprintf(stderr, "[gearmass] uclamp.min %d: tids %s\n", v, msg);
+#else
+    (void)v;
+#endif
+}
+int hle_heavy_tid(int which) { return __atomic_load_n(&g_heavy_tid[which == 2 ? 2 : which & 1], __ATOMIC_ACQUIRE); }
 #ifdef __linux__
 /* v0.10.2: give the inherited masks back. Scans /proc/self/task for threads hle_cpu_place did NOT pin whose mask is
  * exactly the fast set or exactly the slow set and restores the full set (still inside the app's cpuset); called from
@@ -224,7 +290,7 @@ int hle_cpu_tidy(void) {
         pthread_mutex_lock(&g_cpumx);
         for (unsigned i = 0; i < g_cpu_pinned_n; i++) if (g_cpu_pinned[i].tid == tid) { ours = 1; break; }
         pthread_mutex_unlock(&g_cpumx);
-        if (ours || (int)tid == hle_heavy_tid(0) || (int)tid == hle_heavy_tid(1)) continue;
+        if (ours || (int)tid == hle_heavy_tid(0) || (int)tid == hle_heavy_tid(1) || (int)tid == hle_heavy_tid(2)) continue;
         cpu_set_t m; CPU_ZERO(&m);
         if (sched_getaffinity((pid_t)tid, sizeof m, &m) != 0) continue;
         if (!CPU_EQUAL(&m, &g_cpu_big) && !CPU_EQUAL(&m, &g_cpu_little) && !CPU_EQUAL(&m, &g_cpu_prime) && !CPU_EQUAL(&m, &g_cpu_bignp)) continue;
@@ -259,7 +325,7 @@ typedef void* (*adpf_create_fn)(void*, const int32_t*, size_t, int64_t);
 typedef int (*adpf_i64_fn)(void*, int64_t);
 typedef int (*adpf_threads_fn)(void*, const int32_t*, size_t);
 static struct { int state; void* mgr; void* s; adpf_create_fn create; adpf_i64_fn target, report; adpf_threads_fn threads;
-                int tids[2]; int64_t tgt, last; } A;
+                int tids[3]; int64_t tgt, last; } A;
 static int64_t adpf_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec; }
 void hle_adpf_frame(int fps_limit, double slept_s) {
     if (A.state < 0) return;
@@ -275,12 +341,13 @@ void hle_adpf_frame(int fps_limit, double slept_s) {
         if (!A.mgr || !A.create || !A.target || !A.report) { A.state = -1; fprintf(stderr, "[adpf] performance hint API unavailable (needs Android 13+)\n"); return; }
         A.state = 1;
     }
-    int t0 = hle_heavy_tid(0), t1 = hle_heavy_tid(1);
-    int64_t tgt = 1000000000LL / (fps_limit > 0 ? fps_limit : 60), now = adpf_ns();
-    if (!A.s || t0 != A.tids[0] || t1 != A.tids[1]) {
-        int32_t ids[2]; size_t n = 0;
+    int t0 = hle_heavy_tid(0), t1 = hle_heavy_tid(1), t2 = hle_heavy_tid(2);
+    int64_t tgt = gm_k.adpf_ms10 > 0 ? (int64_t)gm_k.adpf_ms10 * 100000LL : 1000000000LL / (fps_limit > 0 ? fps_limit : 60), now = adpf_ns();   /* v1.2.1: GEARMASS target */
+    if (!A.s || t0 != A.tids[0] || t1 != A.tids[1] || t2 != A.tids[2]) {
+        int32_t ids[3]; size_t n = 0;
         if (t0) ids[n++] = t0;
         if (t1 && t1 != t0) ids[n++] = t1;
+        if (t2 && t2 != t0 && t2 != t1) ids[n++] = t2;
         if (!n) return;
         if (A.s && A.threads && A.threads(A.s, ids, n) == 0) { /* updated in place */ }
         else {
@@ -288,8 +355,8 @@ void hle_adpf_frame(int fps_limit, double slept_s) {
             A.s = A.create(A.mgr, ids, n, tgt);
             if (!A.s) { A.state = -1; fprintf(stderr, "[adpf] createSession failed - no performance hints\n"); return; }
         }
-        A.tids[0] = t0; A.tids[1] = t1; A.tgt = tgt; A.last = now;
-        fprintf(stderr, "[adpf] session: main tid %d, render tid %d, target %.1f ms (ME1_ADPF=0 off)\n", t0, t1, tgt / 1e6);
+        A.tids[0] = t0; A.tids[1] = t1; A.tids[2] = t2; A.tgt = tgt; A.last = now;
+        fprintf(stderr, "[adpf] session: main tid %d, render tid %d, d3d replay tid %d, target %.1f ms (ME1_ADPF=0 off)\n", t0, t1, t2, tgt / 1e6);
         return;
     }
     if (tgt != A.tgt) { A.target(A.s, tgt); A.tgt = tgt; }
@@ -464,7 +531,7 @@ uint32_t hle_wait(CPU* c, uint32_t n, const uint32_t* hs, int all, uint32_t ms) 
         dl.tv_sec += ms / 1000; dl.tv_nsec += (long)(ms % 1000) * 1000000L;
         if (dl.tv_nsec >= 1000000000L) { dl.tv_sec++; dl.tv_nsec -= 1000000000L; }
     }
-    KObj* os[64]; uint32_t gen[64]; uint32_t r = WAIT_TIMEOUT; int timed_out = 0, term = 0;
+    KObj* os[64]; uint32_t gen[64]; uint32_t r = WAIT_TIMEOUT; int timed_out = 0, term = 0, spun = 0;
     pthread_mutex_lock(&g_kmx);
     for (uint32_t i = 0; i < n; i++) {
         uint32_t h = hs[i] == PSEUDO_THREAD ? thread_handle_of(self) : hs[i];
@@ -484,6 +551,15 @@ uint32_t hle_wait(CPU* c, uint32_t n, const uint32_t* hs, int all, uint32_t ms) 
         }
         if (self->terminated) { term = 1; break; }
         if (ms == 0 || timed_out) { r = WAIT_TIMEOUT; break; }
+        if (t_heavy && gm_k.spin >= 2 && !spun && gm_spin_us() > 0) {   /* v1.2.1: GEARMASS spin 2 - a short spin before blocking */
+            unsigned g0 = __atomic_load_n(&g_kgen, __ATOMIC_RELAXED); spun = 1;
+            pthread_mutex_unlock(&g_kmx);
+            int64_t t0 = now_ns(), end = t0 + (int64_t)gm_spin_us() * 1000;
+            while (__atomic_load_n(&g_kgen, __ATOMIC_ACQUIRE) == g0 && now_ns() < end) sched_yield();
+            heavy_wait_add(now_ns() - t0);
+            pthread_mutex_lock(&g_kmx);
+            if (__atomic_load_n(&g_kgen, __ATOMIC_RELAXED) != g0) continue;   /* something was signalled: check again */
+        }
         if (ms == INFINITE_MS) pthread_cond_wait(&g_kcv, &g_kmx);
         else if (pthread_cond_timedwait(&g_kcv, &g_kmx, &dl) == ETIMEDOUT) timed_out = 1;
     }
@@ -654,23 +730,40 @@ static void k_DisableThreadLibraryCalls(CPU* c) { hle_dll_disable_thread_calls(A
 /* Sleep(0) spin loops (the PhysX worker waits with appSleep(0): ~200k calls/s, a whole core): after 64 back-to-back
  * Sleep(0) calls of a thread (less than 1 ms apart) each one sleeps ME1_SPIN_SLEEP_US (default 100 us) instead of
  * only yielding. */
-static int g_spin_us = -1, g_spin_heavy = -1;
+static int g_spin_us = -1, g_gm_spin_us = -1;
 static __thread uint32_t t_spin_n; static __thread int64_t t_spin_last;
+static int gm_spin_us(void) {   /* v1.2.1: GEARMASS spin 2 - how long a heavy thread spins before it blocks */
+    if (g_gm_spin_us < 0) { const char* e = getenv("ME1_GM_SPIN_US"); int v = e ? atoi(e) : 100; g_gm_spin_us = v < 0 ? 0 : v > 2000 ? 2000 : v; }
+    return g_gm_spin_us;
+}
 static void sleep0(void) {
     if (g_spin_us < 0) { const char* e = getenv("ME1_SPIN_SLEEP_US"); g_spin_us = e ? atoi(e) : 100; if (g_spin_us > 5000) g_spin_us = 5000; }
-    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
-    int64_t now = (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
-    t_spin_n = now - t_spin_last < 1000000 ? t_spin_n + 1 : 0;
-    if (g_spin_heavy < 0) { const char* e = getenv("ME1_SPIN_HEAVY"); g_spin_heavy = e && *e == '1'; }
-    if (g_spin_us > 0 && t_spin_n >= 64 && !(g_spin_heavy && t_heavy)) {   /* v0.10.13: ME1_SPIN_HEAVY=1 -> main/render only yield */
+    int64_t now = now_ns();
+    int chained = now - t_spin_last < 1000000;
+    t_spin_n = chained ? t_spin_n + 1 : 0;
+    /* v0.10.13 ME1_SPIN_HEAVY=1, v1.2.1 GEARMASS spin >= 1: main/render/replay only yield (the time between back-to-back
+     * calls is an active wait, reported to GEARMASS so it is not taken for load) */
+    int hs = t_heavy && gm_k.spin >= 1;
+    if (hs && chained) heavy_wait_add(now - t_spin_last);
+    if (g_spin_us > 0 && t_spin_n >= 64 && !hs) {
         struct timespec ts = { 0, (long)g_spin_us * 1000L }; nanosleep(&ts, NULL);
-        clock_gettime(CLOCK_MONOTONIC, &t); now = (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+        now = now_ns();
     } else sched_yield();
     t_spin_last = now;
+}
+/* v1.2.1: GEARMASS spin 2 on a heavy thread - Sleep(1..2) sleeps ms-1 and yields up to the deadline (no timer-slack
+ * oversleep in the frame chain) */
+static void spin_sleep(uint32_t ms) {
+    int64_t t0 = now_ns(), end = t0 + (int64_t)ms * 1000000;
+    if (ms > 1) { struct timespec ts = { 0, (long)(ms - 1) * 1000000L }; while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {} }
+    int64_t t1 = now_ns();
+    while (now_ns() < end) sched_yield();
+    heavy_wait_add(now_ns() - t1);
 }
 static void k_Sleep(CPU* c) {
     uint32_t ms = ARG(0);
     if (ms == 0) sleep0();
+    else if (ms <= 2 && t_heavy && gm_k.spin >= 2) spin_sleep(ms);
     else { struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L }; while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {} }
     hle_thread_check();
 }
@@ -748,7 +841,13 @@ static void k_DeleteCriticalSection(CPU* c) { memset(M + ARG(0), 0, 24); }
 static void k_EnterCriticalSection(CPU* c) {
     uint32_t a = ARG(0), me = cur_tid(c); CsNode* n = cs_get(a);
     if (__atomic_load_n(&n->owner, __ATOMIC_RELAXED) == me) n->rec++;
-    else { pthread_mutex_lock(&n->mx); __atomic_store_n(&n->owner, me, __ATOMIC_RELAXED); n->rec = 1; }
+    else {
+        if (t_heavy && gm_k.spin >= 2 && __atomic_load_n(&n->owner, __ATOMIC_RELAXED)) {   /* v1.2.1: GEARMASS spin 2 - wait for the owner briefly */
+            int64_t t0 = now_ns(), end = t0 + (int64_t)gm_spin_us() * 1000;
+            while (__atomic_load_n(&n->owner, __ATOMIC_RELAXED) && now_ns() < end) sched_yield();
+            heavy_wait_add(now_ns() - t0);
+        }
+        pthread_mutex_lock(&n->mx); __atomic_store_n(&n->owner, me, __ATOMIC_RELAXED); n->rec = 1; }
     cs_mirror(a, n);
 }
 static void k_TryEnterCriticalSection(CPU* c) {
@@ -825,6 +924,13 @@ static void mm_thread(CPU* c) {   /* guest thread start routine (never returns) 
         } else g_mmt[best] = g_mmt[--g_mm_n];
         g_mm_running = t.id;
         pthread_mutex_unlock(&g_mmx);
+        /* v1.2 (ME1_AL_TICK_US, off by default): skip ticks of periodic timers that come faster than the set interval
+         * (the host mixer runs at the device rate regardless). One-shot timers always fire. */
+        if ((t.flags & TIME_PERIODIC) && !hle_al_tick_due((uint64_t)now)) {
+            pthread_mutex_lock(&g_mmx);   /* the loop runs with g_mmx held */
+            g_mm_running = 0; pthread_cond_broadcast(&g_mmcv);
+            continue;
+        }
         hle_hb_leave();   /* v0.10: the callback is guest code - sample it as such ([hb] hot list), the waits below as blocked */
         int64_t t0 = mm_now();
         if (t.flags & (TIME_CALLBACK_EVENT_SET | TIME_CALLBACK_EVENT_PULSE))

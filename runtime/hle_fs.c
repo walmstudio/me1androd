@@ -621,6 +621,8 @@ typedef struct { int used, fd, writable, islog, logbol, ro; uint8_t* mem; uint64
 /* heartbeat stats (hle_fs_brief) and engine-log echo: writes to Documents\BioWare\Mass Effect\Logs\*.log are copied to
  * stderr as "[log] ..." lines (ME1_ECHO_LOG=0 turns this off) */
 static uint64_t g_fs_opens, g_fs_rbytes, g_fs_reads, g_fs_fails, g_fs_open_ns; static char g_fs_last[256]; static int g_echo_log = -1;
+uint64_t hle_fs_read_bytes(void);
+uint64_t hle_fs_read_bytes(void) { return __atomic_load_n(&g_fs_rbytes, __ATOMIC_RELAXED); }   /* v1.2.1: GEARMASS spots loading screens */
 void hle_fs_brief(char* o, size_t n) {
     snprintf(o, n, "fs: %llu opens (%llu failed, %.1f s in CreateFile), %llu reads, %.1f MB read, %llu dirs listed; last opened: %s",
              (unsigned long long)g_fs_opens, (unsigned long long)g_fs_fails, g_fs_open_ns / 1e9, (unsigned long long)g_fs_reads,

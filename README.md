@@ -1,6 +1,6 @@
 # me1port — Mass Effect (2007) на Android и Linux
 
-**v1.1.5** · Android 10+ (arm64-v8a) · Linux x86-64 / aarch64 (X11, Wayland) · OpenGL ES 3 / Vulkan 1.0
+**v1.2.1** · Android 10+ (arm64-v8a) · Linux x86-64 / aarch64 (X11, Wayland) · OpenGL ES 3 / Vulkan 1.0
 
 Это порт оригинальной PC-версии Mass Effect на Android и Linux через **статическую перекомпиляцию**. Код `MassEffect.exe` и его DLL
 (x86-32) переводится в C и собирается под ARM64. Вокруг него работает рантайм, который заменяет Windows, Direct3D 9 и звук.
@@ -80,9 +80,14 @@
 - **Пресеты** от «Минимальных» до «Максимальных», автопресет и все настройки движка (разрешение, тени, текстуры,
   масштаб 3D-сцены, ограничение FPS, «Упрощённый расчёт» для слабых GPU).
 - **Графический драйвер**: системный GLES или Vulkan, Mesa Zink, свои драйверы из `MassEffect/GameExDriver/`.
+- **Нагрузка (GEARMASS, v1.2.1)**: как порт распределяет работу по ядрам — «Авто» (по замерам во время игры: что
+  тормозит, CPU или GPU, и насколько горячо), «Эконом», «Баланс», «Производительность», «Максимум», «Своя»;
+  индикатор под счётчиком FPS. Без списков устройств: всё подбирается по ядрам, частотам и замерам.
 - **Управление**: сенсорное (стик, кнопки, камера свайпом, настраиваемая раскладка), USB/Bluetooth-клавиатура и мышь,
   геймпад XInput (нужен мод ME1Controller). С v1.1.3 есть раскладка «как в порте Skyrim»: экранный Xbox-геймпад, стик
   на всю левую половину экрана и кнопка клавиатуры телефона. Работает и с модом, и без него (тогда как клавиатура и мышь).
+  С v1.2 есть своя раскладка, как в Winlator: любые кнопки, стики, крестовины, тачпады и ряды клавиш в любом месте
+  экрана, редактор прямо в игре, профили `.icp` (импорт и экспорт, совместимы с Winlator), встроенный профиль «Mass Effect».
 - **Моды**: `MassEffect/Mods/<имя>/` подключаются виртуально, оригинальные файлы не меняются. DLC подхватываются из папки игры.
 - **PhoneModify**: точечное снижение нагрузки (лимиты draw call, ключи движка, патчи) и генератор готовых профилей.
 - **Диагностика**: «Проверить» (что увидит игра), лог последнего запуска, тест без окна, «Доп. переменные» `ME1_*`.
@@ -121,7 +126,7 @@ me1-launcher                                     # или ярлык; me1-launch
 | `tools/recomp.py` | статический перекомпилятор x86-32 PE → C (`fpsse.py`: x87/SSE/MMX, `ehscan.py`: SEH/C++ EH, `pefile_min.py`) |
 | `tools/ilt_seeds.py`, `tools/seeds/` | точки входа из ILT-таблиц для `--seeds` |
 | `tools/difftest.py` | дифференциальный тест перекомпилятора против Unicorn (x86-хост и arm64 под qemu) |
-| `runtime/` | HLE-рантайм: `rt*.c` (ядро, FP), `hle_win32/sys/fs/thread/seh/vmem/exe.c`, `hle_d3d9.c` (+ `_gl.h`, `_vk.h`), `sm3_glsl.c`, `hle_al.c`, `hle_input.c`, `hle_mod.c`, `hle_hb.c` (профайлер), `test_*.c` |
+| `runtime/` | HLE-рантайм: `rt*.c` (ядро, FP), `hle_win32/sys/fs/thread/seh/vmem/exe.c`, `hle_d3d9.c` (+ `_gl.h`, `_vk.h`, буфер команд `_cmd.c`), `gearmass.c` (распределение нагрузки, пул рабочих потоков), `sm3_glsl.c`, `hle_al.c`, `hle_input.c`, `hle_mod.c`, `hle_hb.c` (профайлер), `test_*.c` |
 | `settings/` | `ini.c`, `me1settings.c` (схема настроек, пресеты, автопресет), `me1cfg_cli.c` |
 | `android/src/com/me1port/launcher/` | лаунчер: `MainActivity`, `GameActivity`, `ControlsOverlay/Settings`, `Pad`, `GameLocator`, `GpuDrivers`, `DeviceInfo`, `L` (локализация) |
 | `android/jni/` | JNI-мосты (`me1port_jni.c`, `game_jni.c`), `run_main.c` (тест без окна), `vkshim.c`, `me1spv.c` (GLSL → SPIR-V) |
@@ -209,6 +214,9 @@ make difftest-arm64        # то же для arm64 под qemu-aarch64-static
 make test-mt test-eh       # потоки/синхронизация и SEH/C++-исключения на тестовых DLL
 make test-vorbis test-bink # перекомпилированные декодеры звука и видео
 make build/test_d3d9 build/test_fs build/test_mod build/test_al   # HLE D3D9, файловый слой, моды, звук
+for m in 0 1 2; do ME1_GL_FAKEWIN=128x128 ME1_D3D_CMD=$m ME1_D3D_CMD_CHECK=1 build/test_cmd; done   # make build/test_cmd: буфер команд, CRC кадра одинаковая во всех режимах
+for w in 0 1 2 4; do ME1_GM_WORKERS=$w ME1_GM_QUALITY=0 ME1_D3D_CMD=2 build/test_cmd; done   # GEARMASS: CRC не зависит от числа рабочих потоков (test_cmd 30 dxt — замер распаковки DXT)
+make build/test_gm && build/test_gm   # GEARMASS: пул потоков, пресеты, классы, политика «Авто», переменные
 make linux-demo && ME1_DEMO_SECONDS=10 build/linux/me1-demo --game /tmp/me1demo  # Linux-фронтенд и рендереры без игры (нужна пустая папка Binaries/)
 ```
 
@@ -227,7 +235,8 @@ make linux-demo && ME1_DEMO_SECONDS=10 build/linux/me1-demo --game /tmp/me1demo 
   (`J` — строки Java, `S` — схема настроек, `F` — нативные фрагменты, `X` — выбор языка). Пробелы и переводы строк
   по краям берутся из ключа автоматически, `\n` означает перевод строки.
 - После правки выполните `python3 android/i18n/build_tr.py en de fr it es pl cs hu`. Скрипт проверит, что все строки на месте и
-  совпадают спецификаторы `%s`/`%.1f`.
+  совпадают спецификаторы `%s`/`%.1f`. Ключи, которых нет в `tr/*.txt` (добавленные прямо в JSON, например описания
+  «Доп. переменных»), скрипт сохраняет (v1.2.1).
 - Если строки нет в переводе, показывается английский вариант, а если нет и его — русский оригинал. Описания
   «Доп. переменных» и комментарии в `phone_tune.txt` переведены только на английский.
 - Linux-лаунчер берёт те же `android/assets/i18n/*.json` (вшиты в бинарник) и добавляет свои строки из
@@ -240,8 +249,9 @@ make linux-demo && ME1_DEMO_SECONDS=10 build/linux/me1-demo --game /tmp/me1demo 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): как всё работает под капотом, кратко. Подробная версия: [docs/ARCHITECTURE.pdf](docs/ARCHITECTURE.pdf) (исходник `docs/ARCHITECTURE_full.md`).
 - [docs/GUIDE.md](docs/GUIDE.md): справочник (моды, драйверы GPU, PhoneModify, настройки, переменные `ME1_*`, рецепты, лог, FAQ).
 - [PERF.md](PERF.md): аудит производительности и загрузки с замерами.
+- [docs/PLAN_v1.2.1.md](docs/PLAN_v1.2.1.md): план 1.2.1 GEARMASS «CPU и GPU не простаивают» — распараллеливание на все ядра, режимы нагрузки, «Авто»; что сделано и что осталось.
 - [linux/README.md](linux/README.md): порт на Linux.
-- [CHANGES_v1.1.md](CHANGES_v1.1.md), [CHANGES_v1.0.md](CHANGES_v1.0.md), [CHANGES_v0.10.13.md](CHANGES_v0.10.13.md): изменения.
+- [CHANGES_v1.2.md](CHANGES_v1.2.md), [CHANGES_v1.1.md](CHANGES_v1.1.md), [CHANGES_v1.0.md](CHANGES_v1.0.md), [CHANGES_v0.10.13.md](CHANGES_v0.10.13.md): изменения.
 
 ---
 

@@ -51,8 +51,8 @@ uint32_t hle_call(const char* dll, const char* name, int nargs, const uint32_t* 
 /* threads + sync objects (hle_thread.c) */
 extern const HleDef hle_thread_defs[]; extern const unsigned hle_thread_ndefs;
 void hle_thread_init(void);
-void hle_cpu_place(int heavy);   /* v0.10.13: 2 = guest main thread, 1 = render thread (big cores), 0 = other game thread (light cores) */
-int  hle_heavy_tid(int which);   /* v0.10.13: 0 = main, 1 = render; 0 if not registered yet */
+void hle_cpu_place(int heavy);   /* v0.10.13: 2 = guest main thread, 1 = render thread (big cores), 0 = other game thread (light cores); v1.2.1: 3 = D3D9 replay thread (like 1) */
+int  hle_heavy_tid(int which);   /* v0.10.13: 0 = main, 1 = render, 2 = D3D9 replay thread (v1.2.1); 0 if not registered yet */
 void hle_adpf_frame(int fps_limit, double slept_s); /* v0.10.13: Android ADPF performance hint, once per frame */
 int  hle_cpu_tidy(void);         /* v0.10.2: unpin threads we did not pin (Mali driver, GL presenter, AL/AAudio) that inherited a mask */
 void hle_thread_check(void);                    /* TerminateThread takes effect at the next HLE call */
@@ -130,6 +130,7 @@ int  hle_ui_cursor(int* x, int* y, int* w, int* h);   /* v1.1.5: cursor in clien
 extern const HleDef hle_al_defs[]; extern const unsigned hle_al_ndefs;
 int hle_al_enabled(void);
 uint32_t hle_al_module(void);                      /* pseudo module handle of OpenAL32.dll (0 when ME1_AL=0) */
+int  hle_al_tick_due(uint64_t now_ns);             /* T-5: throttle guest audio timer ticks (0: skip this tick) */
 extern int (*hle_al_out_open)(int rate, const char** name);   /* v1.1: desktop front end audio device (SDL2), see hle_al.c */
 extern void (*hle_al_out_start)(void);
 void hle_al_render(int16_t* out, int frames);      /* mix stereo s16 frames (ME1_AL_SINK=manual: tests drive the mixer) */

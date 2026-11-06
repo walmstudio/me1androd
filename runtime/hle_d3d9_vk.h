@@ -545,11 +545,12 @@ static VRes* vimg(Obj* t) {
     r->f = vf; r->vf = vf->vf; r->rt = (t->usage & 1) != 0; r->cube = t->type == T_CUBE; r->is3d = t->type == T_VOLTEX;
     r->layers = r->cube ? 6 : 1; r->obpp = f->bytes;
     if (is_block(vf->conv)) {
-        VkFormatFeatureFlags ff = r->is3d ? 0 : fmt_opt(vf->vf);
+        VkFormatFeatureFlags ff = r->is3d || g_texbc < (vf->conv <= CV_DXT5 ? 1 : 2) ? 0 : fmt_opt(vf->vf);   /* v1.2.1: ME1_TEX_BC */
         if (!(ff & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) {
             r->dec = 1;
             if (vf->conv == CV_BC4) { r->vf = VK_FORMAT_R8_UNORM; r->obpp = 1; }
             else if (vf->conv == CV_BC5) { r->vf = VK_FORMAT_R8G8_UNORM; r->obpp = 2; }
+            else if (g_tex16 == 3 && vf->conv == CV_DXT1) { r->vf = VK_FORMAT_R5G6B5_UNORM_PACK16; r->obpp = 2; }   /* v1.2.1: no alpha */
             else if (g_tex16 && vf->conv == CV_DXT1) { r->vf = VK_FORMAT_A1R5G5B5_UNORM_PACK16; r->obpp = 2; }
             else if (g_tex16 >= 2) { r->vf = VK_FORMAT_B4G4R4A4_UNORM_PACK16; r->obpp = 2; }
             else { r->vf = VK_FORMAT_R8G8B8A8_UNORM; r->obpp = 4; }
@@ -615,20 +616,11 @@ static void vtex_upload(Obj* t, VRes* r, uint32_t face, uint32_t lvl, uint32_t x
         for (uint32_t k = 0; k < dz; k++) for (uint32_t rr = 0; rr < by; rr++) memcpy(q + ((size_t)k * by + rr) * bx * bsz, src + (size_t)k * slice + (size_t)rr * pitch, (size_t)bx * bsz);
     } else if (blk) {
         uint32_t ow = bx * 4, oh = by * 4;
+        int pk = ob == 4 ? PK_RGBA8 : ob == 1 ? PK_R8 : r->vf == VK_FORMAT_R8G8_UNORM ? PK_RG8 : r->vf == VK_FORMAT_A1R5G5B5_UNORM_PACK16 ? PK_VK1555
+               : r->vf == VK_FORMAT_R5G6B5_UNORM_PACK16 ? PK_565 : PK_VK4444;
         for (uint32_t k = 0; k < dz; k++) {
             const uint8_t* s0 = src + (size_t)k * slice; uint8_t* qk = q + (size_t)k * ow * oh * ob;
-            for (uint32_t rr = 0; rr < by; rr++) for (uint32_t c = 0; c < bx; c++) {
-                uint8_t px[16][4]; memset(px, 0, sizeof px); decode_block(f->conv, s0 + (size_t)rr * pitch + (size_t)c * bsz, px);
-                for (int i = 0; i < 16; i++) {
-                    size_t o = ((size_t)(rr * 4 + (uint32_t)i / 4) * ow + c * 4 + (uint32_t)i % 4) * ob; const uint8_t* v = px[i];
-                    if (ob == 4) memcpy(qk + o, v, 4);
-                    else if (ob == 1) qk[o] = v[0];
-                    else if (r->vf == VK_FORMAT_R8G8_UNORM) { qk[o] = v[0]; qk[o + 1] = v[1]; }
-                    else { uint16_t u = r->vf == VK_FORMAT_A1R5G5B5_UNORM_PACK16 ? (uint16_t)((v[3] >> 7) << 15 | (v[0] >> 3) << 10 | (v[1] >> 3) << 5 | (v[2] >> 3))
-                                                                              : (uint16_t)((v[2] >> 4) << 12 | (v[1] >> 4) << 8 | (v[0] >> 4) << 4 | (v[3] >> 4));
-                           memcpy(qk + o, &u, 2); }
-                }
-            }
+            dec_rect(f->conv, pk, bsz, bx, by, ob, s0, pitch, qk);   /* v1.2.1: on GEARMASS workers */
         }
         GS.decoded++;
     } else if (f->conv == CV_RAW) {
@@ -658,14 +650,12 @@ static void vtex_upload(Obj* t, VRes* r, uint32_t face, uint32_t lvl, uint32_t x
     img_to(cb, r, L, 1, (uint32_t)vl, 1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     r->use = g_vserial;
 }
-static void vb_tex_unlock(Obj* t, uint32_t s, uint32_t lvl) {
-    if (!t->lockr || !t->lockv || !t->lockv[s]) return;
-    uint32_t* L = t->lockr + 8 * s;
+static void vb_tex_unlock(Obj* t, uint32_t s, uint32_t lvl, const uint32_t* L, const uint8_t* p) {
+    if (!L || !p) return;
     if (L[6] & 0x10u) return;
     VRes* r = vimg(t); if (!r || r->kind != 1) return;
     uint32_t pitch, rows, unit; int blk; layout(t->fmt, dimv(t->w, lvl), dimv(t->h, lvl), &pitch, &rows, &unit, &blk);
-    uint32_t k = blk ? 4 : 1, face = t->type == T_CUBE ? s / t->levels : 0;
-    const uint8_t* p = M + t->lockv[s] + (size_t)(L[1] / k) * pitch + (size_t)(L[0] / k) * unit + (size_t)L[4] * pitch * rows;
+    uint32_t face = t->type == T_CUBE ? s / t->levels : 0;
     vtex_upload(t, r, face, lvl, L[0], L[1], L[4], L[2] - L[0], L[3] - L[1], L[5] - L[4], p, pitch, pitch * rows);
 }
 /* static vertex/index buffers: host-visible, renamed when the GPU may still read the old contents */
@@ -925,6 +915,32 @@ static void spv_store(uint64_t key, const unsigned* a, size_t na, const unsigned
     if (f) { int ok = fwrite(h, 4, 4, f) == 4 && fwrite(all, 4, na + nb, f) == na + nb; ok &= fclose(f) == 0; if (ok) rename(tmp, path); else unlink(tmp); }
     free(all);
 }
+typedef struct { const char* src[2]; unsigned* w[2]; size_t n[2]; int ok[2]; char log[2][4096]; } SpvJob;
+static void* spv_prewarm_main(void* a) {
+    (void)a;
+#if defined(__linux__)
+    pthread_setname_np(pthread_self(), "me1-spvwarm");
+#endif
+    /* the same "#version 310 es" as vk_glsl: glslang builds the built-in symbol tables of each stage once */
+    static const char vs[] = "#version 310 es\nlayout(location = 0) in vec4 a;\nvoid main() { gl_Position = a; }\n";
+    static const char fs[] = "#version 310 es\nprecision highp float;\nlayout(location = 0) out vec4 o;\nvoid main() { o = vec4(1.0); }\n";
+    for (int st = 0; st < 2; st++) {
+        unsigned* w = NULL; size_t n = 0; char log[256];
+        if (p_spv_compile(st, st ? fs : vs, &w, &n, log, sizeof log) && w) p_spv_free(w);
+    }
+    return NULL;
+}
+static void spv_prewarm(void) {
+    const char* e = getenv("ME1_VK_SPV_MT"); if (e && *e == '0') return;
+    pthread_t t; pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&at, 4 << 20);   /* glslang recurses */
+    if (pthread_create(&t, &at, spv_prewarm_main, NULL) != 0) { /* compiled on first use as before */ }
+    pthread_attr_destroy(&at);
+}
+static void spv_job(void* ctx, int i0, int i1) {
+    SpvJob* j = ctx;
+    for (int i = i0; i < i1; i++) j->ok[i] = p_spv_compile(i, j->src[i], &j->w[i], &j->n[i], j->log[i], sizeof j->log[i]) != 0;
+}
 static VProg* vprog_get(Obj* vso, Obj* pso, uint32_t im, uint32_t sm) {
     GlSh* vs = vso->gx; GlSh* ps = pso->gx;
     if (!vs || !ps) return NULL;
@@ -943,8 +959,13 @@ static VProg* vprog_get(Obj* vso, Obj* pso, uint32_t im, uint32_t sm) {
     else {
         char* vsrc = sm3_glsl_vs(&vs->s, &ps->s); char* psrc = sm3_glsl_ps(&ps->s);
         char* a = vk_glsl(vsrc, 1, &ps->s, im, sm, vs->s.nconst); char* b = vk_glsl(psrc, 0, &ps->s, 0, 0, ps->s.nconst);
-        static char log[8192]; unsigned *wa = NULL, *wb = NULL; size_t na = 0, nb = 0; const char* what = "vertex";
-        if (p_spv_compile(0, a, &wa, &na, log, sizeof log)) { what = "fragment"; if (p_spv_compile(1, b, &wb, &nb, log, sizeof log)) what = NULL; }
+        /* v1.2.1: the vertex and the fragment shader compile to SPIR-V at the same time (a GEARMASS worker takes one;
+         * glslang compiles independent shaders thread-safely; ME1_VK_SPV_MT=0 one after the other) */
+        SpvJob* j = calloc(1, sizeof *j); j->src[0] = a; j->src[1] = b;
+        static int mt = -1; if (mt < 0) { const char* e = getenv("ME1_VK_SPV_MT"); mt = !(e && *e == '0'); }
+        if (mt) gm_parallel_for(2, spv_job, j, 1); else spv_job(j, 0, 2);
+        unsigned *wa = j->w[0], *wb = j->w[1]; size_t na = j->n[0], nb = j->n[1];
+        const char* what = !j->ok[0] ? "vertex" : !j->ok[1] ? "fragment" : NULL; const char* log = !j->ok[0] ? j->log[0] : j->log[1];
         char nm[96]; snprintf(nm, sizeof nm, "vkprog_%08x_%08x%s.glsl", vso->crc, pso->crc, what ? "_FAILED" : "");
         if (what) {
             GS.progfail++;
@@ -958,7 +979,7 @@ static VProg* vprog_get(Obj* vso, Obj* pso, uint32_t im, uint32_t sm) {
         }
         if (wa) p_spv_free(wa);
         if (wb) p_spv_free(wb);
-        free(vsrc); free(psrc); free(a); free(b);
+        free(j); free(vsrc); free(psrc); free(a); free(b);
         if (what) return P;
     }
     GS.tbuilt = mono();
@@ -1078,7 +1099,11 @@ static VkSampler vsampler(const uint32_t* ss, const VRes* g, const Obj* t) {
     uint32_t u = ss[1] & 7, v = ss[2] & 7, w = ss[3] & 7, mag = ss[5] & 7, mn = ss[6] & 7, mip = ss[7] & 7;
     int nearest = !g->filt;
     uint32_t an = 1;
-    if ((mn == 3 || mag == 3) && VFE.samplerAnisotropy) { an = ss[10] ? ss[10] : 1; if (an > (uint32_t)VX.maxaniso) an = (uint32_t)VX.maxaniso; if (an > 16) an = 16; if (sm3_lite && an > 2) an = 2; }
+    uint32_t af = (uint32_t)gm_k.aniso;   /* v1.2.1: GEARMASS anisotropy floor for mipmapped linear sampling */
+    if (VFE.samplerAnisotropy && ((mn == 3 || mag == 3) || (af > 1 && mn >= 2 && mip && !nearest))) {
+        an = (mn == 3 || mag == 3) && ss[10] ? ss[10] : 1; if (an < af) an = af;
+        if (an > (uint32_t)VX.maxaniso) an = (uint32_t)VX.maxaniso; if (an > 16) an = 16; if (sm3_lite && an > 2) an = 2; if (!an) an = 1;
+    }
     int lod = (int)(t->lod > ss[9] ? t->lod : ss[9]) - g->drop; if (lod < 0) lod = 0; if (lod > g->lv - 1) lod = g->lv - 1; if (lod > 15) lod = 15;
     if (g->lv <= 1) mip = 0;
     uint32_t border = (u == 4 || v == 4 || w == 4) ? ss[4] : 0;
@@ -1143,7 +1168,7 @@ static void slot_finish(VSlot* s) {
         uint64_t t[2] = { 0, 0 };
         if (vkGetQueryPoolResults(VD, s->qp, 0, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
             double ns = (double)((t[1] - t[0]) & g_tsmask) * VX.tsperiod;
-            if (ns > 0 && ns < 5e9) { VT.ns += (uint64_t)ns; if (s->eof) VT.nf++; }
+            if (ns > 0 && ns < 5e9) { VT.ns += (uint64_t)ns; if (s->eof) VT.nf++; gm_gpu_ns((uint64_t)ns, s->eof); }   /* v1.2.1: GEARMASS */
         }
         s->qon = 0;
     }
@@ -1295,7 +1320,7 @@ static int vsetup(Dev* d, const Sm3* vs, const DrawCall* dc, VLay* L) {
                 L->b[b].buf = g->buf; L->b[b].off = (VkDeviceSize)o; g->use = g_vserial;
             } else if (!dc->up && !vb->shadow) return -1;
             else {
-                uint32_t src = dc->up ? dc->upv : vb->shadow;
+                uint32_t src = dc->up ? dc->upv : d->vbsh[s];   /* v1.2.1: the shadow at the draw (Lock may rename it) */
                 uint64_t a = (uint64_t)off0 + (uint64_t)slo * stride, len = (uint64_t)(shi - slo) * stride;
                 if (!stride) len = 256;
                 if (!dc->up) { if (a >= vb->size) return -1; if (a + len > vb->size) len = vb->size - a; }
@@ -1429,6 +1454,20 @@ static int vq_data(Obj* o, uint32_t flags, uint32_t* out) {
     else if (mono() - q->t0 > 0.25) { q_done(q, q_visible(q), 0); *out = q->res; return 1; }   /* the engine would time out at 0.5 s */
     return 0;
 }
+/* v1.2: like vq_data, but never flushes or waits (ME1_OCCLUSION=2 and the after-Present poll) */
+static int vq_available(Obj* o) {
+    QRes* q = o->gx;
+    if (g_vklost || q->slot >= NSLOT) { q_done(q, q_visible(q), 0); return 1; }
+    VSlot* s = &S[q->slot];
+    if (s->rser != q->ser || s->ost == 3) { q_done(q, q_visible(q), 0); return 1; }   /* slot reused / never ran */
+    if (s->ost == 0) return 0;   /* still in the frame being recorded */
+    if (s->ost == 1 && s->pending) { if (vkGetFenceStatus(VD, s->fence) != VK_SUCCESS) return 0; slot_finish(s); }
+    if (s->ost != 2) return 0;
+    uint64_t v;
+    if (!vq_sum(q, s, &v)) q_done(q, q_visible(q), 0);
+    else q_done(q, !v ? 0 : !VX.oprec ? q_area(q) : v > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)v, 1);
+    return 1;
+}
 static void vb_draw(Dev* d, DrawCall* dc) {
     if (g_vklost) return;
     dc->count = prim_verts(dc->pt, dc->prims);
@@ -1467,7 +1506,7 @@ static void vb_draw(Dev* d, DrawCall* dc) {
             if (a + len > io->size) { GS.skipped++; return; }
             VRes* g = io->shadow ? NULL : vbuf(io);
             if (g && g->kind == 3) { ib = g->buf; ibo = 0; first = dc->start; g->use = g_vserial; }
-            else if (io->shadow) src = io->shadow + (uint32_t)a;
+            else if (io->shadow) src = d->ibsh + (uint32_t)a;
             else { GS.skipped++; return; }
         }
         if (!ib) { uint8_t* p = ring_alloc(&CS->vtx, len, 16, &ib, &ibo, NULL); if (!p) { GS.skipped++; return; } memcpy(p, M + src, (size_t)len); GS.ring += len; }
@@ -1913,11 +1952,16 @@ static void vwin_apply(void) {
     }
     pthread_mutex_lock(&g_pmx); g_haswin = ok; g_win_ack = gen; pthread_cond_broadcast(&g_pcv); pthread_mutex_unlock(&g_pmx);
 }
+static void vwin_apply_cb(void* a) { (void)a; vwin_apply(); }
 static void vb_set_window(void* anw) {
     pthread_mutex_lock(&g_pmx); g_win_pending = anw; g_win_gen++; pthread_mutex_unlock(&g_pmx);
     /* switch now if the renderer is idle (the old window may disappear when this returns); else at the next Present */
     struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_sec += 3;
-    if (pthread_mutex_timedlock(&g_mx, &ts) == 0) { vwin_apply(); pthread_mutex_unlock(&g_mx); }
+    if (pthread_mutex_timedlock(&g_mx, &ts) == 0) {
+        if (q_on()) q_call(vwin_apply_cb, NULL);   /* v1.2.1: ME1_D3D_CMD - on the replay thread, after the recorded frame */
+        else vwin_apply();
+        pthread_mutex_unlock(&g_mx);
+    }
     else vlog("me1gl_set_window: renderer busy for 3 s, the window is switched at the next Present\n");
 }
 static int vswap_acquire(uint32_t* idx) {
@@ -2220,6 +2264,7 @@ static int vb_init(void) {
     g_gldbg = (e = getenv("ME1_GL_DEBUG")) ? atoi(e) : 0;
     if ((e = getenv("ME1_TEX_MAXSIZE")) && atoi(e) >= 16) g_texmax = atoi(e);
     g_tex16 = (e = getenv("ME1_TEX_16")) ? atoi(e) : 1;
+    if ((e = getenv("ME1_TEX_BC")) && *e >= '0' && *e <= '2') g_texbc = *e - '0';   /* v1.2.1 */
     if ((e = getenv("ME1_FRAME_DUMP")) && *e) { g_fdump = e; mkdir(e, 0755); }
     if ((e = getenv("ME1_FRAME_DUMP_EVERY")) && atoi(e) > 0) g_dumpevery = atoi(e);
     if ((e = getenv("ME1_GLSL_DUMP")) && *e) { g_glsldump = e; mkdir(e, 0755); }
@@ -2246,6 +2291,7 @@ static int vb_init(void) {
     }
     if (sl) { p_spv_compile = (__typeof__(p_spv_compile))dlsym(sl, "me1spv_compile"); p_spv_free = (__typeof__(p_spv_free))dlsym(sl, "me1spv_free"); }
     if (!p_spv_compile || !p_spv_free) { vlog("SPIR-V compiler %s not available (%s)\n", sp, sl ? "symbols missing" : dlerror()); return 0; }
+    spv_prewarm();   /* v1.2.1: glslang's one-time set-up (~0.1 s) on a helper thread while the device is created */
     int custom = 0;
     void* lib = vk_lib_open(&custom); if (!lib) return 0;
     vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr");
@@ -2342,7 +2388,7 @@ static int vb_init(void) {
     if (VX.swapext) { VKDO(VK_LDO) if (!vkCreateSwapchainKHR || !vkAcquireNextImageKHR || !vkQueuePresentKHR || !vkGetSwapchainImagesKHR) VX.swapext = 0; }
     vkGetDeviceQueue(VD, VQF, 0, &VQ);
     VX.oprec = VFE.occlusionQueryPrecise; g_vq_act = 0;
-    VX.bc = VFE.textureCompressionBC; VX.aniso = VFE.samplerAnisotropy; VX.maxaniso = VPP.limits.maxSamplerAnisotropy; VX.indep = VFE.independentBlend;
+    VX.bc = VFE.textureCompressionBC && !((e = getenv("ME1_VK_BC")) && *e == '0'); VX.aniso = VFE.samplerAnisotropy; VX.maxaniso = VPP.limits.maxSamplerAnisotropy; VX.indep = VFE.independentBlend;
     VX.maxtex = VPP.limits.maxImageDimension2D; VX.tsperiod = VPP.limits.timestampPeriod;
     VX.uboalign = VPP.limits.minUniformBufferOffsetAlignment < 16 ? 16 : VPP.limits.minUniformBufferOffsetAlignment;
     uint32_t tsb = VQF < nq ? qf[VQF].timestampValidBits : 0;
@@ -2431,8 +2477,8 @@ static int vb_init(void) {
     vlog("Vulkan renderer: %s, Vulkan %u.%u.%u (instance %u.%u), driver 0x%08x, vendor 0x%04x device 0x%04x%s\n", VX.name, VPP.apiVersion >> 22,
          (VPP.apiVersion >> 12) & 0x3FF, VPP.apiVersion & 0xFFF, iv >> 22, (iv >> 12) & 0x3FF, VPP.driverVersion, VPP.vendorID, VPP.deviceID,
          custom ? ", custom driver" : "");
-    vlog("BC textures %d%s, anisotropy %d (%.0fx), independent blend %d, GPU timer %d, swap chain %d%s, depth format %d%s, max texture %u, UBO align %u, "
-         "SPIR-V compiler %s, pipeline cache %s (%zu bytes)%s\n", VX.bc, VX.strict ? " (ME1_VK_STRICT)" : "", VX.aniso, VX.maxaniso, VX.indep, VX.ts, VX.swapext,
+    vlog("BC textures %d%s (ME1_TEX_BC %d, ME1_TEX_16 %d), anisotropy %d (%.0fx), independent blend %d, GPU timer %d, swap chain %d%s, depth format %d%s, max texture %u, UBO align %u, "
+         "SPIR-V compiler %s, pipeline cache %s (%zu bytes)%s\n", VX.bc, VX.strict ? " (ME1_VK_STRICT)" : "", g_texbc, g_tex16, VX.aniso, VX.maxaniso, VX.indep, VX.ts, VX.swapext,
          VW.cpu ? " (frames by CPU copy)" : "", (int)VX.ds, VX.dsstencil ? "" : " (no stencil)", VX.maxtex, (unsigned)VX.uboalign, sp,
          g_vpcpath[0] ? g_vpcpath : "off", pcn, VX.validate ? ", validation on" : "");
     vlog("D3D9 float emulation %d (ME1_FLOAT_EMU), invariant position %d (ME1_INVARIANT), simplified calculation %d (ME1_SHADER_LITE: engine lighting/effects switches, FP16 for _pp values, cheap sRGB, anisotropy <= 2x, mm timer 5 ms, audio 32 kHz), submits split every %u draws (ME1_VK_SPLIT)\n",
@@ -2463,6 +2509,7 @@ static int vb_init(void) {
 static void q_free(Obj* o) {   /* v1.1.3: occlusion query object (QRes) */
     QRes* q = o->gx;
     if (g_qopen == o) { if (g_gl == 1) gl_query_end(o); g_qopen = NULL; }
+    qpend_del(o);
     if (g_gl == 1 && !g_vk) gles_query_free(q);
     free(q); o->gx = NULL;
 }
@@ -2470,7 +2517,8 @@ static void gl_free(Obj* o) { if (o->type == T_QUERY) q_free(o); else if (g_vk) 
 static void gl_query_begin(Obj* q) { if (g_vk) vq_begin(q); else gles_query_begin(q); }
 static void gl_query_end(Obj* q) { if (g_vk) vq_end(q); else gles_query_end(q); }
 static int gl_query_data(Obj* q, uint32_t flags, uint32_t* out) { return g_vk ? vq_data(q, flags, out) : gles_query_data(q, flags, out); }
-static void gl_tex_unlock(Obj* r, uint32_t s, uint32_t lvl) { if (g_vk) vb_tex_unlock(r, s, lvl); else gles_tex_unlock(r, s, lvl); }
+static int gl_query_available(Obj* q) { return g_vk ? vq_available(q) : gles_query_available(q); }
+static void gl_tex_unlock(Obj* r, uint32_t s, uint32_t lvl, const uint32_t* L, const uint8_t* p) { if (g_vk) vb_tex_unlock(r, s, lvl, L, p); else gles_tex_unlock(r, s, lvl, L, p); }
 static void gl_buf_unlock(Obj* b, uint32_t off, uint32_t end, uint32_t flags) { if (g_vk) vb_buf_unlock(b, off, end, flags); else gles_buf_unlock(b, off, end, flags); }
 static void gl_release(void) { if (!g_vk) gles_release(); }
 static void gl_present(Obj* bb) { if (g_vk) vb_present(bb); else gles_present(bb); }

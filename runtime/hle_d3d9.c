@@ -15,7 +15,14 @@
  *      ME1_SCREEN=WxH    desktop mode reported to the game (default 1280x720)
  *      ME1_VRAM_MB=n     GetAvailableTextureMem (default 512)
  *      ME1_OCCLUSION=0|1|2  v1.1.3 occlusion queries: 1 (default) real GPU results with D3D9 semantics (S_FALSE until the
- *                        GPU is done), 2 never wait (the query's last finished result), 0 always "visible" (before v1.1.3) */
+ *                        GPU is done), 2 never wait (the query's last finished result), 0 always "visible" (before v1.1.3)
+ *      ME1_D3D_CMD=0|1|2  v1.2.1 command stream: 0 direct renderer calls, 1 record + replay at Present on the
+ *                        same thread (checks the recording), 2 replay on the render thread "me1-d3d" (see the section below);
+ *                        unset: chosen by GEARMASS (gm_cmd_default: 2 on 4+ cores except eco/off, else 0)
+ *      ME1_GEARMASS, ME1_GM_*  load governor (gearmass.c): frames ahead, FPS limit and the anisotropy floor are read
+ *                        from gm_k at every Present / sampler bind
+ *      ME1_D3D_CMD_CHECK=1  compare the full state at every draw with the replay's mirror (log + report)
+ *      ME1_D3D_CMD_MB=n  command ring size, MB (4..256, default 32); ME1_D3D_CMD_SPIN=us (hle_d3d9_cmd.c, default 50) */
 #define _GNU_SOURCE
 #include "hle.h"
 #include <stdio.h>
@@ -25,6 +32,9 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <stddef.h>
+#include "hle_d3d9_cmd.h"
+#include "gearmass.h"
 
 #define OK_ 0u
 #define E_NOINTERFACE_ 0x80004002u
@@ -58,8 +68,10 @@ struct Obj {
     void* gx;                     /* GL backend object (GlRes / GlSh) */
     uint32_t* lockr;              /* GL backend: locked rect + flags per subresource */
     uint32_t boff, bend, bflags;  /* buffers: union of the ranges locked since the last upload, OR of the lock flags */
+    uint64_t pseq;                /* v1.2.1 ME1_D3D_CMD: the last recorded command that reads this object's guest memory */
+    uint32_t qiss, qfst;          /* v1.2.1 ME1_D3D_CMD, occlusion query: Issue calls recorded; 0 never / 1 open / 2 ended */
 };
-typedef struct {
+typedef struct Dev {
     Obj* self; Obj* d3d; Obj* swap; Obj* autods;
     Obj* rt[4]; Obj* ds; Obj* tex[21]; Obj* vb[16]; uint32_t vboff[16], vbstride[16], vbfreq[16];
     Obj* ib; Obj* decl; uint32_t fvf; Obj* vs; Obj* ps;
@@ -68,7 +80,13 @@ typedef struct {
     uint32_t vp[6], scissor[4], clip[8][4]; float xf[512][16];
     uint32_t hwnd, flags, devtype, cursor, recording, mat[17]; uint16_t gamma[768];
     uint32_t cver[2];             /* shader constant versions (vs, ps): bumped by every Set*ShaderConstant* */
+    uint32_t vbsh[16], ibsh;      /* v1.2.1: guest copy (shadow) of each bound vertex buffer / the index buffer at the draw */
+    /* v1.2.1 ME1_D3D_CMD bookkeeping (not state): changed render states / sampler states / float constants since the last
+     * recorded draw, "send everything", the render thread's copy of the state (mir) and what was sent to it (sent) */
+    uint64_t rsd[4], vfd[4], pfd[4]; uint32_t ssd; int alld;
+    struct Dev* mir; struct Dev* sent;
 } Dev;
+#define DEV_STATE offsetof(Dev, rsd)   /* the state part of Dev */
 static int g_gl = -1;             /* -1: not initialized, 0: null backend, 1: GPU renderer */
 static int g_vk;                  /* the GPU renderer is Vulkan (hle_d3d9_vk.h), else GLES */
 static int g_zink;                /* GLES through Mesa zink (hle_d3d9_gl.h) */
@@ -76,7 +94,7 @@ void (*hle_toast_hook)(const char* msg);   /* one-line UI notification (set by a
 void (*hle_restart_hook)(void);   /* serial DEVICE_LOST -> game process restart (set by android/jni/game_jni.c) */
 static Obj* g_devobj;
 static void gl_free(Obj* o); static void gl_note_lock(Obj* r, uint32_t s, uint32_t lvl, uint32_t area, int vol, uint32_t flags);
-static void gl_tex_unlock(Obj* r, uint32_t s, uint32_t lvl); static void gl_buf_unlock(Obj* b, uint32_t off, uint32_t end, uint32_t flags);
+static void gl_tex_unlock(Obj* r, uint32_t s, uint32_t lvl, const uint32_t* L, const uint8_t* p); static void gl_buf_unlock(Obj* b, uint32_t off, uint32_t end, uint32_t flags);
 static void gl_shader_new(Obj* o); static int gl_init(void); static void gl_release(void); static void gl_present(Obj* bb); static void gl_frame_times(char* o, size_t cap, uint64_t frames);
 static void gl_clear(Dev* d, uint32_t n, uint32_t rects, uint32_t flags, uint32_t color, uint32_t zbits, uint32_t stencil);
 static void gl_draw_x(Dev* d, uint32_t pt, uint32_t prims, int indexed, int32_t base, uint32_t minv, uint32_t nv, uint32_t start,
@@ -84,6 +102,7 @@ static void gl_draw_x(Dev* d, uint32_t pt, uint32_t prims, int indexed, int32_t 
 static void gl_stretch(Obj* src, uint32_t sr, Obj* dst, uint32_t dr, uint32_t filter); static void gl_colorfill(Obj* surf, uint32_t rect, uint32_t color);
 static void gl_update_surface(Obj* src, uint32_t sr, Obj* dst, uint32_t dpt); static void gl_update_texture(Obj* src, Obj* dst);
 static void gl_get_rt_data(Obj* rt, Obj* dst); static void gl_rt_lock(Obj* r, uint32_t s, uint32_t lvl, uint32_t mem); static void gl_report(void);
+static uint32_t prim_verts(uint32_t pt, uint32_t n); static uint32_t sub_mem(Obj* s, Obj** rootp, uint32_t* sub);   /* hle_d3d9_gl.h */
 /* v1.1.3: occlusion queries (D3DQUERYTYPE_OCCLUSION). Until v1.1.2 every query reported "100000 pixels visible": the
  * engine never culled anything hidden (all draws behind walls went to the GPU) and lens flares / coronas, whose
  * brightness and size follow the visible pixel count, shone at full strength through walls and far too big.
@@ -94,11 +113,26 @@ typedef struct {
     int n, att, rec, polls; /* n: backend sub-queries; att/rec: draws inside the query attempted / recorded by the backend */
     uint32_t slot, sub[8], res, last; int has_last; uint64_t ser; double t0;
     uint32_t glq[8]; void* ctx; uint32_t rtw, rth;   /* GLES: query names, their context; render target size at the first draw */
+    uint32_t gen;           /* v1.2.1 ME1_D3D_CMD: the last Issue replayed (Obj.qiss when current) */
 } QRes;
 static Obj* g_qopen;        /* the occlusion query between Issue(BEGIN) and Issue(END) */
+#ifdef __ANDROID__
+static int g_occl = 2;      /* ME1_OCCLUSION (v1.2: Android never waits for the GPU by default, Linux 1) */
+#else
 static int g_occl = 1;      /* ME1_OCCLUSION */
+#endif
 static struct { uint64_t issued, ready, zero, fallback, notready, flushes, waits; double wait_s; } g_qs, g_qs0;
 static void gl_query_begin(Obj* q); static void gl_query_end(Obj* q); static int gl_query_data(Obj* q, uint32_t flags, uint32_t* out);
+static int gl_query_available(Obj* q);   /* v1.2: non-blocking - 1 and the result stored (q_done) when the GPU has it */
+/* v1.2: queries whose result is still on the GPU; polled without waiting after every Present, so GetData of the next
+ * frame finds the result ready (st 3) instead of waiting (mode 1) or using an old one (mode 2). Removed in q_free. */
+static Obj** g_qpend; static int g_qpend_n, g_qpend_cap;
+static void qpend_add(Obj* o) {
+    for (int i = 0; i < g_qpend_n; i++) if (g_qpend[i] == o) return;
+    if (g_qpend_n == g_qpend_cap) { g_qpend_cap = g_qpend_cap ? 2 * g_qpend_cap : 256; g_qpend = realloc(g_qpend, g_qpend_cap * sizeof *g_qpend); }
+    g_qpend[g_qpend_n++] = o;
+}
+static void qpend_del(Obj* o) { for (int i = 0; i < g_qpend_n; i++) if (g_qpend[i] == o) { g_qpend[i] = g_qpend[--g_qpend_n]; return; } }
 
 static pthread_mutex_t g_mx;
 static __thread const char* g_cur;          /* method being executed (for logs) */
@@ -151,6 +185,76 @@ static void gfree(uint32_t p, uint32_t n) {
     if (!p) return;
     if (n >= 0x10000u) { hle_vmem_free(p, 0, 0x8000u); return; }
     int k = cls(n); wr32(p, g_pool[k]); g_pool[k] = p;
+}
+
+/* ---- v1.2.1: the command stream (ME1_D3D_CMD; hle_d3d9_cmd.h) - the "scheduler" of the 1.2 preview, reworked ----
+ * 0 (default): the renderer is called directly. 1: every renderer call is recorded and the frame is replayed at Present
+ * (or at a sync point) on the same thread - checks the recording, no gain. 2: the replay runs on a render thread, in
+ * parallel with the game's next frame (at most one frame ahead), like Wine's CSMT.
+ * What makes it work (the 1.2 preview drew black: it kept pointers to state and guest memory that changed before the
+ * replay): everything the renderer reads is captured at the call -
+ *   - state: the renderer reads a mirror Dev owned by the replay; before each draw/clear the front end records the bytes
+ *     of the state that changed since the last record (dirty bits for render/sampler states and float constants, memcmp
+ *     against "sent" for the rest);
+ *   - *UP vertices/indices, clear/copy rectangles and texture lock contents are copied into the ring (guest memory);
+ *   - dynamic vertex/index buffers: a Lock that would overwrite data a recorded draw still needs gets a new guest copy
+ *     (copy-on-write; NOOVERWRITE writes in place, as D3D9 allows); the draw records the copy it used (Dev.vbsh/ibsh);
+ *   - readbacks (GetRenderTargetData, UpdateSurface/UpdateTexture sources) mark the object: its next Lock waits;
+ *   - objects are destroyed in order: the front end retires the COM stub at once, the renderer frees its part when the
+ *     FREE record runs, the memory goes when the replay has passed it;
+ *   - occlusion queries run on the replay side; GetData reads their published result (generation-checked).
+ * ME1_D3D_CMD_CHECK=1 appends the full state to every draw and compares it with the mirror (logs mismatches). */
+static int g_cmd;                 /* the active mode (0 until the device exists and the ring is up) */
+static int g_cmdwant, g_cmdchk, g_cmdmb = 32;   /* ME1_D3D_CMD, ME1_D3D_CMD_CHECK, ME1_D3D_CMD_MB */
+static pthread_mutex_t g_qmx = PTHREAD_MUTEX_INITIALIZER;   /* occlusion query results shared by the replay and GetData */
+static int q_on(void) { return g_cmd; }
+static struct { uint64_t cow, cowmb, texcopy, texref, texbytes, upext, lockwaits, states, statebytes; } g_cs;   /* report */
+enum { CM_PAD, CM_STATE, CM_DRAW, CM_CLEAR, CM_STRETCH, CM_FILL, CM_UPDSURF, CM_UPDTEX, CM_RTDATA, CM_TEXUP, CM_SHADER, CM_FREE,
+       CM_QISSUE, CM_PRESENT, CM_CALL, CM_FTIMES };
+#define RECSZ(T) ((uint32_t)((sizeof(T) + 15) & ~(size_t)15))   /* payload starts here */
+typedef struct { CmdHdr h; Dev* mir; uint32_t n, bytes; } CState;   /* + n {off, len} + the bytes */
+typedef struct { CmdHdr h; Dev* mir; uint32_t pt, prims, minv, nv, start, upv, upstride, upi, upifmt, chkoff; int32_t base; uint8_t indexed, up, skip; } CDraw;
+typedef struct { CmdHdr h; Dev* mir; uint32_t n, rects, flags, color, z, stencil; } CClear;
+typedef struct { CmdHdr h; Obj* a; Obj* b; uint32_t ra, rb, v; } COp;   /* stretch, fill, update surface/texture, readback */
+typedef struct { CmdHdr h; Obj* r; uint32_t s, lvl, src, L[8]; } CTexUp;
+typedef struct { CmdHdr h; Obj* o; uint32_t f, gen; } CObj;           /* shader, free, query issue, present */
+typedef struct { CmdHdr h; void (*fn)(void*); void* a; } CCall;
+/* a synchronous call into the renderer: recorded, then waits until the replay has run it (direct when off) */
+static void q_call(void (*fn)(void*), void* a) {
+    if (!q_on() || cmd_on_consumer()) { fn(a); return; }
+    CCall* r = cmd_begin(sizeof *r); if (!r) { fn(a); return; }
+    r->fn = fn; r->a = a;
+    cmd_wait(cmd_end(r, sizeof *r, CM_CALL, g_cur));
+}
+/* memory the replay may still read: freed by the front end once the replay has passed pos */
+enum { Z_GMEM, Z_SHADOW, Z_OBJ };
+typedef struct { uint64_t pos; int kind; uint32_t g, n; void* p; } Zomb;
+static Zomb* g_zomb; static int g_nzomb, g_capzomb;
+static struct { uint32_t g, n; } g_shc[64]; static int g_nshc; static uint64_t g_shcb;   /* recycled big shadows */
+static uint32_t shadow_new(uint32_t n) {
+    if (n >= 0x10000u) for (int i = 0; i < g_nshc; i++) if (g_shc[i].n == n) { uint32_t g = g_shc[i].g; g_shcb -= n; g_shc[i] = g_shc[--g_nshc]; return g; }
+    return galloc(n);
+}
+static void shadow_put(uint32_t g, uint32_t n) {
+    if (!g) return;
+    if (n >= 0x10000u && g_nshc < 64 && g_shcb + n <= (64u << 20)) { g_shc[g_nshc].g = g; g_shc[g_nshc].n = n; g_nshc++; g_shcb += n; return; }
+    gfree(g, n);
+}
+static void obj_mem_free(Obj* o);
+static void zomb_free(Zomb* z) {
+    if (z->kind == Z_GMEM) gfree(z->g, z->n);
+    else if (z->kind == Z_SHADOW) shadow_put(z->g, z->n);
+    else obj_mem_free(z->p);
+}
+static void zomb_drain(void) {
+    uint64_t done = cmd_done(); int k = 0;
+    for (int i = 0; i < g_nzomb; i++) { if (g_zomb[i].pos <= done) zomb_free(&g_zomb[i]); else g_zomb[k++] = g_zomb[i]; }
+    g_nzomb = k;
+}
+static void zomb_add(uint64_t pos, int kind, uint32_t g, uint32_t n, void* p) {
+    if (pos <= cmd_done()) { Zomb z = { pos, kind, g, n, p }; zomb_free(&z); return; }
+    if (g_nzomb == g_capzomb) { zomb_drain(); if (g_nzomb == g_capzomb) { g_capzomb = g_capzomb ? 2 * g_capzomb : 1024; g_zomb = realloc(g_zomb, g_capzomb * sizeof *g_zomb); } }
+    Zomb* z = &g_zomb[g_nzomb++]; z->pos = pos; z->kind = kind; z->g = g; z->n = n; z->p = p;
 }
 
 /* ---- formats ---- */
@@ -335,7 +439,41 @@ static void fdev_set(uint32_t g, Dev* d) {
     __atomic_store_n(&g_fdev_g, g, __ATOMIC_RELEASE);
     __atomic_store_n(&g_fdev, d, __ATOMIC_RELEASE);
 }
+/* v1.2.1 ME1_D3D_CMD: destroy in order - the front end retires the COM object now (destroy_front), the renderer frees its
+ * part when the FREE record is replayed (back_free), the memory goes once the replay has passed it (obj_mem_free) */
+static void destroy_front(Obj* o) {
+    if (o->type == T_DEV && o->ext == (void*)__atomic_load_n(&g_fdev, __ATOMIC_ACQUIRE)) __atomic_store_n(&g_fdev, (Dev*)NULL, __ATOMIC_RELEASE);
+    if (g_log > 1) fprintf(stderr, "[d3d] destroy %s %08x\n", tname[o->type], o->g);
+    if (o->sub) for (uint32_t i = 0; i < sub_count(o); i++) if (o->sub[i]) destroy_front(o->sub[i]);
+    if (o->bb) destroy_front(o->bb);
+    wr32(o->g + 4, 0xDEADD3D9u); gfree(o->g, 16);
+    g_obj[o->idx] = NULL;
+    if (g_nfreeidx == g_capfree) { g_capfree = g_capfree ? 2 * g_capfree : 4096; g_freeidx = realloc(g_freeidx, g_capfree * sizeof *g_freeidx); }
+    g_freeidx[g_nfreeidx++] = o->idx;
+    g_st.alive[o->type]--;
+}
+static void back_free(Obj* o) {
+    if (o->gx) gl_free(o);
+    if (o->sub) for (uint32_t i = 0; i < sub_count(o); i++) if (o->sub[i]) { o->sub[i]->parent = NULL; back_free(o->sub[i]); }
+    if (o->bb) back_free(o->bb);
+}
+static void obj_mem_free(Obj* o) {
+    uint32_t n = o->sub ? sub_count(o) : 0;
+    free_obj_mem(o);
+    if (o->sub) { for (uint32_t i = 0; i < n; i++) if (o->sub[i]) obj_mem_free(o->sub[i]); free(o->sub); }
+    if (o->bb) obj_mem_free(o->bb);
+    if (o->type == T_DEV && o->ext) { Dev* d = o->ext; free(d->mir); free(d->sent); }
+    free(o->ext); free(o);
+}
 static void destroy(Obj* o) {
+    if (q_on()) {
+        destroy_front(o);
+        CObj* r = cmd_begin(sizeof *r);
+        if (!r) return;   /* cannot happen (record size); leaks the object */
+        r->o = o;
+        zomb_add(cmd_end(r, sizeof *r, CM_FREE, g_cur), Z_OBJ, 0, 0, o);
+        return;
+    }
     if (o->type == T_DEV && o->ext == (void*)__atomic_load_n(&g_fdev, __ATOMIC_ACQUIRE)) __atomic_store_n(&g_fdev, (Dev*)NULL, __ATOMIC_RELEASE);
     if (g_log > 1) fprintf(stderr, "[d3d] destroy %s %08x\n", tname[o->type], o->g);
     if (o->gx) gl_free(o);
@@ -368,10 +506,15 @@ static void d3d_init(void) {
     if ((e = getenv("ME1_VRAM_MB")) && atoi(e) > 0) g_vram = (unsigned)atoi(e);
     if ((e = getenv("ME1_MAX_FRAMES"))) g_maxframes = strtoull(e, NULL, 10);
     if ((e = getenv("ME1_MAX_SECONDS"))) g_maxsecs = atof(e);
-    if ((e = getenv("ME1_FPS_LIMIT")) && atoi(e) > 0) { int l = atoi(e); g_fpslimit = l < 10 ? 10 : l > 240 ? 240 : l; }
+    gm_init();   /* v1.2.1: GEARMASS - presets, auto, the frame limit (ME1_FPS_LIMIT is one of its pinned knobs) */
+    g_fpslimit = gm_k.fps_limit;
     if ((e = getenv("ME1_D3D_DUMP")) && *e) { g_dump = e; mkdir(e, 0755); }
     if ((e = getenv("ME1_OCCLUSION")) && *e >= '0' && *e <= '2') g_occl = *e - '0';
-    if (g_fpslimit) fprintf(stderr, "[d3d] fps limit %d (ME1_FPS_LIMIT)\n", g_fpslimit); else fprintf(stderr, "[d3d] fps limit off\n");
+    if ((e = getenv("ME1_D3D_CMD")) && *e >= '0' && *e <= '2') g_cmdwant = *e - '0';   /* v1.2.1: command stream / render thread */
+    else g_cmdwant = gm_cmd_default();   /* GEARMASS: 2 with >= 4 cores outside eco/off */
+    if ((e = getenv("ME1_D3D_CMD_CHECK"))) g_cmdchk = *e == '1';
+    if ((e = getenv("ME1_D3D_CMD_MB")) && atoi(e) > 0) { int m = atoi(e); g_cmdmb = m < 4 ? 4 : m > 256 ? 256 : m; }
+    if (g_fpslimit) fprintf(stderr, "[d3d] fps limit %d (ME1_FPS_LIMIT / GEARMASS)\n", g_fpslimit); else fprintf(stderr, "[d3d] fps limit off\n");
     init_modes();
     g_st.t0 = g_st.tlast = mono();
 }
@@ -493,8 +636,35 @@ static int persistent(Obj* r) {
     if (r->type == T_VB || r->type == T_IB) return 1;   /* static buffers are filled once - keep them too */
     return r->pool >= 1 || (r->usage & 0x200);
 }
+typedef struct { Obj* r; uint32_t s, lvl, mem; } RtLockA;
+static void rt_lock_cb(void* a) { RtLockA* x = a; gl_rt_lock(x->r, x->s, x->lvl, x->mem); }
+/* v1.2.1: offset of the locked rect/box in the level's lock buffer; *len = bytes from there to its last byte */
+static uint32_t tex_lock_off(Obj* r, uint32_t lvl, const uint32_t* L, uint32_t* len) {
+    uint32_t pitch, rows, unit; int blk; layout(r->fmt, dimv(r->w, lvl), dimv(r->h, lvl), &pitch, &rows, &unit, &blk);
+    uint32_t k = blk ? 4 : 1, c0 = L[0] / k, c1 = (L[2] + k - 1) / k, r0 = L[1] / k, r1 = (L[3] + k - 1) / k, dz = L[5] > L[4] ? L[5] - L[4] : 0;
+    if (len) *len = c1 <= c0 || r1 <= r0 || !dz ? 0 : (dz - 1) * pitch * rows + (r1 - r0 - 1) * pitch + (c1 - c0) * unit;
+    return r0 * pitch + c0 * unit + L[4] * pitch * rows;
+}
+/* v1.2.1 ME1_D3D_CMD: the texture upload of an Unlock. Small locks are copied into the ring (the game may lock again at
+ * once: video frames, glyph caches); big ones (streamed mips) are read from the lock buffer itself - the next Lock of the
+ * texture waits until the renderer has read it (Obj.pseq), a freed lock buffer waits in the zombie list. */
+static void q_texup(Obj* r, uint32_t s, uint32_t lvl, const uint32_t* L) {
+    if (L[6] & 0x10u) return;   /* READONLY */
+    uint32_t len, off = tex_lock_off(r, lvl, L, &len);
+    if (!len) return;
+    int copy = len <= (1u << 20) && len <= cmd_max() / 4;
+    uint32_t n = RECSZ(CTexUp) + (copy ? len : 0);
+    CTexUp* t = cmd_begin(n); if (!t) return;
+    t->r = r; t->s = s; t->lvl = lvl; memcpy(t->L, L, sizeof t->L);
+    if (copy) { uint8_t* pl = (uint8_t*)t + RECSZ(CTexUp); memcpy(pl, M + r->lockv[s] + off, len); t->src = cmd_guest(pl); g_cs.texcopy++; }
+    else { t->src = r->lockv[s] + off; g_cs.texref++; }
+    g_cs.texbytes += len;
+    uint64_t pos = cmd_end(t, n, CM_TEXUP, g_cur);
+    if (!copy) r->pseq = pos;
+}
 static uint32_t lock_sub(Obj* r, uint32_t s, uint32_t lvl, uint32_t area, int vol, uint32_t out, uint32_t flags) {
     if (!out) return ERR_INVALIDCALL;
+    if (q_on() && r->pseq > cmd_done()) { g_cs.lockwaits++; cmd_wait(r->pseq); }   /* v1.2.1: a recorded command still uses its memory */
     uint32_t pitch, rows, unit; int blk;
     layout(r->fmt, dimv(r->w, lvl), dimv(r->h, lvl), &pitch, &rows, &unit, &blk);
     uint32_t bytes = level_bytes(r, lvl);
@@ -505,7 +675,7 @@ static uint32_t lock_sub(Obj* r, uint32_t s, uint32_t lvl, uint32_t area, int vo
     }
     if (g_gl == 1) {
         gl_note_lock(r, s, lvl, area, vol, flags);
-        if (fresh && (r->usage & 1) && r->pool == 0) gl_rt_lock(r, s, lvl, r->lockv[s]);   /* render target: its pixels */
+        if (fresh && (r->usage & 1) && r->pool == 0) { RtLockA a = { r, s, lvl, r->lockv[s] }; q_call(rt_lock_cb, &a); }   /* render target: its pixels */
     }
     uint32_t p = r->lockv[s], k = blk ? 4 : 1;
     if (area) p += rd32(area + 4) / k * pitch + rd32(area) / k * unit + (vol ? rd32(area + 16) * pitch * rows : 0);
@@ -515,8 +685,16 @@ static uint32_t lock_sub(Obj* r, uint32_t s, uint32_t lvl, uint32_t area, int vo
 }
 static uint32_t unlock_sub(Obj* r, uint32_t s, uint32_t lvl) {
     if (!r->lockv || !r->lockv[s]) return OK_;
-    if (g_gl == 1) gl_tex_unlock(r, s, lvl);
-    if (!persistent(r)) { gfree(r->lockv[s], level_bytes(r, lvl)); r->lockv[s] = 0; }
+    if (g_gl == 1 && r->lockr) {
+        const uint32_t* L = r->lockr + 8 * s;
+        if (q_on()) q_texup(r, s, lvl, L);
+        else gl_tex_unlock(r, s, lvl, L, M + r->lockv[s] + tex_lock_off(r, lvl, L, NULL));
+    }
+    if (!persistent(r)) {
+        if (q_on()) zomb_add(cmd_pos(), Z_GMEM, r->lockv[s], level_bytes(r, lvl), NULL);   /* the renderer may still read it */
+        else gfree(r->lockv[s], level_bytes(r, lvl));
+        r->lockv[s] = 0;
+    }
     return OK_;
 }
 /* IDirect3DTexture9 */
@@ -598,8 +776,20 @@ static uint32_t m_Buf_Lock(CPU* c) {
     if (!o || !pp) return ERR_INVALIDCALL;
     if (off >= o->size) off = 0;
     uint32_t base;
-    if (o->shadow) base = o->shadow;
-    else {
+    if (o->shadow) {
+        uint32_t fl = A(4);
+        /* v1.2.1 ME1_D3D_CMD: a recorded draw still reads this copy and the Lock may overwrite it (neither NOOVERWRITE nor
+         * READONLY): copy-on-write - the draws keep the old copy (zombie until replayed), the game writes a new one */
+        if (q_on() && o->pseq > cmd_done() && !(fl & 0x1010u)) {
+            uint32_t ns = shadow_new(o->size);
+            if (ns) {
+                if (!(fl & 0x2000u)) memcpy(M + ns, M + o->shadow, o->size);   /* not DISCARD: keep the contents */
+                zomb_add(o->pseq, Z_SHADOW, o->shadow, o->size, NULL);
+                o->shadow = ns; o->pseq = 0; g_cs.cow++; g_cs.cowmb += o->size;
+            } else { g_cs.lockwaits++; cmd_wait(o->pseq); }
+        }
+        base = o->shadow;
+    } else {
         if (!o->lockv) o->lockv = calloc(1, 4);
         if (!o->lockv[0] && !(o->lockv[0] = galloc(o->size))) { wr32(pp, 0); return 0x8876017Cu; }
         base = o->lockv[0]; o->locks++;
@@ -612,12 +802,14 @@ static uint32_t m_Buf_Lock(CPU* c) {
     g_st.locks++; g_st.lockbytes += sz && sz <= o->size - off ? sz : o->size - off;
     wr32(pp, base + off); return OK_;
 }
+typedef struct { Obj* b; uint32_t off, end, fl; } BufUpA;
+static void buf_unlock_cb(void* a) { BufUpA* x = a; gl_buf_unlock(x->b, x->off, x->end, x->fl); }
 static uint32_t m_Buf_Unlock(CPU* c) {
     Obj* o = SELF;
     if (!o) return OK_;
     if (o->shadow) { o->boff = o->bend = 0; return OK_; }   /* dynamic: streamed from guest memory at draw time */
     if (o->locks > 0 && --o->locks == 0) {
-        if (g_gl == 1) gl_buf_unlock(o, o->boff, o->bend, o->bflags);
+        if (g_gl == 1) { BufUpA a = { o, o->boff, o->bend, o->bflags }; q_call(buf_unlock_cb, &a); }
         o->boff = o->bend = 0;
         gfree(o->lockv[0], o->size); o->lockv[0] = 0;
     }
@@ -689,7 +881,10 @@ static uint32_t create_shader(CPU* c, int type) {
     hist_add(g_shv, &g_nshv, 16, ver, 1);
     if (shcrc_insert(o->crc) && g_dump) dump_shader(o);
     if (g_log > 1) fprintf(stderr, "[d3d] %s %s_%u_%u %u tokens crc %08x -> %08x\n", g_cur, type == T_VS ? "vs" : "ps", ver >> 8 & 0xFF, ver & 0xFF, n, o->crc, o->g);
-    if (g_gl == 1) gl_shader_new(o);
+    if (g_gl == 1) {
+        CObj* r = q_on() ? cmd_begin(sizeof *r) : NULL;   /* v1.2.1: the renderer's part is created on the replay side */
+        if (r) { r->o = o; cmd_end(r, sizeof *r, CM_SHADER, g_cur); } else gl_shader_new(o);
+    }
     wr32(pp, o->g); return OK_;
 }
 static uint32_t m_GetFunction(CPU* c) {
@@ -709,7 +904,9 @@ static uint32_t q_visible(const QRes* q) {   /* nothing could be measured: the q
     return q_area(q);
 }
 static void q_done(QRes* q, uint32_t v, int measured) {
+    pthread_mutex_lock(&g_qmx);   /* v1.2.1: GetData reads the result on the game thread (ME1_D3D_CMD=2) */
     q->st = 3; q->res = v; q->last = v; q->has_last = 1;
+    pthread_mutex_unlock(&g_qmx);
     if (measured) { g_qs.ready++; if (!v) g_qs.zero++; } else g_qs.fallback++;
 }
 static void q_close(Obj* o) {   /* Issue(END) of the open query (or BEGIN of another one) */
@@ -719,11 +916,19 @@ static void q_close(Obj* o) {   /* Issue(END) of the open query (or BEGIN of ano
     q->st = 2; q->polls = 0; q->t0 = 0;
     if (!q->att) q_done(q, 0, 1);                                    /* nothing drawn: 0 samples, as in D3D9 */
     else if (q->over || q->att != q->rec || !q->n) q_done(q, q_visible(q), 0);   /* a draw was skipped / not measurable */
+    else if (g_occl && g_gl == 1) qpend_add(o);   /* v1.2: polled after Present */
 }
-static uint32_t m_Query_Issue(CPU* c) {
-    Obj* o = SELF; uint32_t f = A(1); if (!o || o->type != T_QUERY) return ERR_INVALIDCALL;
+static void qpend_poll(void) {   /* v1.2: after Present, never waits */
+    int n = 0;
+    for (int i = 0; i < g_qpend_n; i++) {
+        Obj* o = g_qpend[i]; QRes* q = o->gx;
+        if (!q || q->st != 2 || gl_query_available(o)) continue;   /* re-issued, resolved by GetData, or ready now */
+        g_qpend[n++] = o;
+    }
+    g_qpend_n = n;
+}
+static void q_issue(Obj* o, uint32_t f) {   /* replay side with ME1_D3D_CMD */
     QRes* q = o->gx;
-    if (o->qtype != 9 || !q) return OK_;
     if (f & 2) {   /* D3DISSUE_BEGIN */
         if (g_qopen) q_close(g_qopen);   /* one occlusion query at a time: BEGIN of another one ends it */
         q->st = 1; q->over = 0; q->n = q->att = q->rec = 0; q->polls = 0; q->t0 = 0; q->ctx = NULL; q->rtw = q->rth = 0;
@@ -733,19 +938,50 @@ static uint32_t m_Query_Issue(CPU* c) {
         if (g_qopen == o) q_close(o);
         else if (q->st != 2) q_done(q, 0, 1);   /* END without BEGIN: an empty query */
     }
+}
+static uint32_t m_Query_Issue(CPU* c) {
+    Obj* o = SELF; uint32_t f = A(1); if (!o || o->type != T_QUERY) return ERR_INVALIDCALL;
+    QRes* q = o->gx;
+    if (o->qtype != 9 || !q || !(f & 3)) return OK_;
+    if (q_on()) {   /* v1.2.1: recorded; the replay runs q_issue and publishes the generation */
+        CObj* r = cmd_begin(sizeof *r); if (!r) return OK_;
+        r->o = o; r->f = f; r->gen = ++o->qiss;
+        cmd_end(r, sizeof *r, CM_QISSUE, g_cur);
+        o->qfst = f & 2 ? 1 : 2;
+        return OK_;
+    }
+    q_issue(o, f);
     return OK_;
+}
+typedef struct { Obj* o; uint32_t flags, v; int ret; } GetDataA;
+static void rq_getdata(void* a) {   /* ME1_OCCLUSION=1 with ME1_D3D_CMD: the direct logic, after the replay caught up */
+    GetDataA* x = a; QRes* q = x->o->gx;
+    if (!q || q->st == 0 || q->st == 1) x->v = q_visible(q);
+    else if (q->st == 3) x->v = q->res;
+    else if (!gl_query_data(x->o, x->flags, &x->v)) { g_qs.notready++; x->ret = 1; }
 }
 static uint32_t m_Query_GetData(CPU* c) {
     Obj* o = SELF; uint32_t p = A(1), n = A(2); if (!o) return ERR_INVALIDCALL;
     uint32_t v = 1;
-    if (o->qtype == 9) {
+    if (o->qtype == 9 && q_on() && o->gx) {   /* v1.2.1 ME1_D3D_CMD: the result the replay has published */
+        QRes* q = o->gx;
+        pthread_mutex_lock(&g_qmx);
+        int cur = q->gen == o->qiss, st = q->st; uint32_t res = q->res, vis = q_visible(q);
+        pthread_mutex_unlock(&g_qmx);
+        if (!g_occl || o->qfst != 2) v = vis;                     /* never issued / still open */
+        else if (cur && st == 3) v = res;
+        else if (g_occl == 2) v = vis;                            /* never waits: the last result */
+        else {
+            GetDataA a = { o, A(3), 1, 0 }; q_call(rq_getdata, &a);
+            if (a.ret) return 1;                                  /* not finished on the GPU: S_FALSE */
+            v = a.v;
+        }
+    } else if (o->qtype == 9) {
         QRes* q = o->gx;
         if (!q || !g_occl || g_gl != 1 || q->st == 0 || q->st == 1) v = q_visible(q);   /* never issued / still open */
         else if (q->st == 3) v = q->res;
-        else if (!gl_query_data(o, A(3), &v)) {   /* not finished on the GPU */
-            if (g_occl == 2) v = q_visible(q);
-            else { g_qs.notready++; return 1; }   /* S_FALSE */
-        }
+        else if (g_occl == 2) v = gl_query_available(o) ? q->res : q_visible(q);   /* v1.2: never waits: ready, else the last result */
+        else if (!gl_query_data(o, A(3), &v)) { g_qs.notready++; return 1; }   /* not finished on the GPU: S_FALSE */
     }
     if (p && n >= 4) wr32(p, v);
     return OK_;
@@ -799,6 +1035,224 @@ static uint32_t m_CheckDeviceFormatConversion(CPU* c) {
 static uint32_t m_D3D_GetDeviceCaps(CPU* c) { if (A(1) || !A(3)) return ERR_INVALIDCALL; fill_caps(A(3)); return OK_; }
 static uint32_t m_GetAdapterMonitor(CPU* c) { (void)c; return 0x00010001u; }
 
+/* ---- v1.2.1: command stream - state deltas, recording, replay (see the comment at g_cmd) ---- */
+#define DG(f, es) { offsetof(Dev, f), sizeof(((Dev*)0)->f), es, #f }
+static const struct { uint32_t off, len, es; const char* name; } g_dgrp[] = {   /* compared with "sent" at every draw */
+    { offsetof(Dev, rt), offsetof(Dev, ds) + sizeof(Obj*) - offsetof(Dev, rt), sizeof(Obj*), "rt/ds" },
+    DG(tex, sizeof(Obj*)), DG(vb, sizeof(Obj*)), DG(vboff, 4), DG(vbstride, 4), DG(vbfreq, 4),
+    { offsetof(Dev, ib), offsetof(Dev, ps) + sizeof(Obj*) - offsetof(Dev, ib), 4, "ib/decl/fvf/vs/ps" },
+    DG(vsi, 16), DG(psi, 16), DG(vsb, 4), DG(psb, 4),
+    { offsetof(Dev, vp), offsetof(Dev, scissor) + sizeof(((Dev*)0)->scissor) - offsetof(Dev, vp), 4, "vp/scissor" },
+    DG(cver, 4), DG(vbsh, 4), DG(ibsh, 4),
+    /* dirty-bit groups (only in the ME1_D3D_CMD_CHECK snapshot) */
+    DG(rs, 4), DG(ss, 4), DG(vsf, 16), DG(psf, 16),
+};
+#define NDGRP_CMP 15   /* the first 15 entries are memcmp'd at every draw */
+static uint32_t g_chklen;   /* bytes of the ME1_D3D_CMD_CHECK snapshot */
+static uint64_t g_chkn, g_chkbad;
+typedef struct { uint32_t off, len; } Patch;
+static Patch g_pt[1024]; static int g_npt, g_ptover; static uint32_t g_ptb;
+static void pt_add(uint32_t off, uint32_t len) {
+    if (g_npt && g_pt[g_npt - 1].off + g_pt[g_npt - 1].len == off) g_pt[g_npt - 1].len += len;
+    else if (g_npt < 1024) { g_pt[g_npt].off = off; g_pt[g_npt].len = len; g_npt++; }
+    else g_ptover = 1;
+    g_ptb += len;
+}
+static void diff_grp(const uint8_t* a, const uint8_t* b, uint32_t off, uint32_t len, uint32_t es) {   /* first..last differing element */
+    if (!memcmp(a + off, b + off, len)) return;
+    uint32_t lo = 0, hi = len;
+    while (!memcmp(a + off + lo, b + off + lo, es)) lo += es;
+    while (!memcmp(a + off + hi - es, b + off + hi - es, es)) hi -= es;
+    pt_add(off + lo, hi - lo);
+}
+static void diff_bits(const uint8_t* a, const uint8_t* b, uint32_t off, uint64_t* bits, int nw, uint32_t es) {   /* runs of dirty elements */
+    for (int w = 0; w < nw; w++) {
+        uint64_t m = bits[w]; bits[w] = 0;
+        while (m) {
+            int i = __builtin_ctzll(m), j = i;
+            while (j < 64 && (m >> j & 1)) j++;
+            m &= ~((j == 64 ? ~0ull : (1ull << j) - 1) & ~((1ull << i) - 1));
+            diff_grp(a, b, off + (uint32_t)(w * 64 + i) * es, (uint32_t)(j - i) * es, es);
+        }
+    }
+}
+static void cmark(uint64_t* bits, uint32_t start, uint32_t n) { if (bits) for (uint32_t i = start; i < start + n; i++) bits[i >> 6] |= 1ull << (i & 63); }
+/* record the state that changed since the last record (before every draw and clear) */
+static void q_state(Dev* d) {
+    Dev* t = d->sent; const uint8_t* a = (const uint8_t*)d; const uint8_t* b = (const uint8_t*)t;
+    g_npt = 0; g_ptb = 0; g_ptover = 0;
+    if (!d->alld) {
+        diff_bits(a, b, offsetof(Dev, rs), d->rsd, 4, 4);
+        if (d->ssd) { for (int s = 0; s < 21; s++) if (d->ssd >> s & 1) diff_grp(a, b, offsetof(Dev, ss) + (uint32_t)s * sizeof d->ss[0], sizeof d->ss[0], 4); d->ssd = 0; }
+        diff_bits(a, b, offsetof(Dev, vsf), d->vfd, 4, 16);
+        diff_bits(a, b, offsetof(Dev, psf), d->pfd, 4, 16);
+        for (int i = 0; i < NDGRP_CMP; i++) diff_grp(a, b, g_dgrp[i].off, g_dgrp[i].len, g_dgrp[i].es);
+    }
+    if (d->alld || g_ptover) {   /* everything (device creation, Reset) */
+        d->alld = 0; memset(d->rsd, 0, sizeof d->rsd); memset(d->vfd, 0, sizeof d->vfd); memset(d->pfd, 0, sizeof d->pfd); d->ssd = 0;
+        g_npt = 0; g_ptb = 0; g_ptover = 0; pt_add(0, (uint32_t)DEV_STATE);
+    }
+    if (!g_npt) return;
+    uint32_t n = RECSZ(CState) + (uint32_t)g_npt * 8 + g_ptb;
+    CState* r = cmd_begin(n); if (!r) return;
+    r->mir = d->mir; r->n = (uint32_t)g_npt; r->bytes = g_ptb;
+    uint32_t* pe = (uint32_t*)((uint8_t*)r + RECSZ(CState)); uint8_t* pd = (uint8_t*)(pe + 2 * g_npt);
+    for (int i = 0; i < g_npt; i++) {
+        pe[2 * i] = g_pt[i].off; pe[2 * i + 1] = g_pt[i].len;
+        memcpy(pd, a + g_pt[i].off, g_pt[i].len); memcpy((uint8_t*)t + g_pt[i].off, a + g_pt[i].off, g_pt[i].len); pd += g_pt[i].len;
+    }
+    cmd_end(r, n, CM_STATE, g_cur);
+    g_cs.states++; g_cs.statebytes += n;
+}
+static void chk_put(uint8_t* p, const Dev* d) {
+    for (unsigned i = 0; i < sizeof g_dgrp / sizeof g_dgrp[0]; i++) { memcpy(p, (const uint8_t*)d + g_dgrp[i].off, g_dgrp[i].len); p += g_dgrp[i].len; }
+}
+static void chk_cmp(const uint8_t* p, const Dev* m) {
+    g_chkn++;
+    for (unsigned i = 0; i < sizeof g_dgrp / sizeof g_dgrp[0]; i++) {
+        const uint8_t* q = (const uint8_t*)m + g_dgrp[i].off;
+        if (memcmp(p, q, g_dgrp[i].len)) {
+            uint32_t k = 0; while (p[k] == q[k]) k++;
+            if (g_chkbad++ < 20) fprintf(stderr, "[d3d] ME1_D3D_CMD_CHECK: %s (draw %llu): the replayed state differs in %s at element %u\n",
+                                         g_cur, (unsigned long long)g_chkn, g_dgrp[i].name, k / g_dgrp[i].es);
+        }
+        p += g_dgrp[i].len;
+    }
+}
+static void dev_sh(Dev* d) {   /* the guest copies the draw reads (Lock may give a buffer a new one) */
+    for (int s = 0; s < 16; s++) d->vbsh[s] = d->vb[s] ? d->vb[s]->shadow : 0;
+    d->ibsh = d->ib ? d->ib->shadow : 0;
+}
+static void q_draw(Dev* d, int go, uint32_t pt, uint32_t prims, int indexed, int32_t base, uint32_t minv, uint32_t nv, uint32_t start,
+                   int up, uint32_t upv, uint32_t upstride, uint32_t upi, uint32_t upifmt) {
+    uint32_t vb = 0, ib = 0;
+    if (go) {
+        q_state(d);
+        if (up) {   /* *UP: the vertices (and indices) are copied */
+            uint32_t hi = indexed ? minv + nv : prim_verts(pt, prims);
+            vb = upstride ? hi * upstride : 256;
+            if (indexed) ib = prim_verts(pt, prims) * (upifmt == 102 ? 4 : 2);
+        }
+    }
+    uint32_t vba = (vb + 15) & ~15u, pay = vba + ((ib + 15) & ~15u);
+    int ext = pay > cmd_max() / 2;   /* too big for the ring: a guest block freed once replayed */
+    uint32_t chk = go && g_cmdchk ? g_chklen : 0, n = RECSZ(CDraw) + (ext ? 0 : pay) + chk;
+    CDraw* r = cmd_begin(n); if (!r) return;
+    r->mir = d->mir; r->pt = pt; r->prims = prims; r->indexed = (uint8_t)indexed; r->base = base; r->minv = minv; r->nv = nv; r->start = start;
+    r->up = (uint8_t)up; r->upv = upv; r->upstride = upstride; r->upi = upi; r->upifmt = upifmt; r->skip = !go; r->chkoff = 0;
+    uint8_t* pl = (uint8_t*)r + RECSZ(CDraw); uint32_t eg = 0;
+    if (go && up) {
+        uint8_t* hp = pl; uint32_t dst = cmd_guest(pl);
+        if (ext) { eg = shadow_new(pay); hp = M + eg; dst = eg; g_cs.upext++; }
+        if (ext && !eg) r->skip = 1;
+        else {
+            memcpy(hp, M + upv, vb); r->upv = dst;
+            if (ib) { memcpy(hp + vba, M + upi, ib); r->upi = dst + vba; }
+        }
+        if (!ext) pl += pay;
+    }
+    if (chk) { chk_put(pl, d); r->chkoff = (uint32_t)(pl - (uint8_t*)r); }
+    uint64_t pos = cmd_end(r, n, CM_DRAW, g_cur);
+    if (eg) zomb_add(pos, Z_SHADOW, eg, pay, NULL);
+    if (go && !up) {   /* the next overwriting Lock of these buffers copies (m_Buf_Lock) */
+        for (int s = 0; s < 16; s++) if (d->vb[s]) d->vb[s]->pseq = pos;
+        if (indexed && d->ib) d->ib->pseq = pos;
+    }
+}
+static void q_clear(Dev* d, uint32_t n, uint32_t rects, uint32_t flags, uint32_t color, uint32_t z, uint32_t stencil) {
+    q_state(d);
+    uint32_t nr = rects && n ? (n > 256 ? 256 : n) : 0, sz = RECSZ(CClear) + nr * 16;
+    CClear* r = cmd_begin(sz); if (!r) return;
+    r->mir = d->mir; r->n = nr; r->flags = flags; r->color = color; r->z = z; r->stencil = stencil; r->rects = 0;
+    if (nr) { uint8_t* pl = (uint8_t*)r + RECSZ(CClear); memcpy(pl, M + rects, nr * 16); r->rects = cmd_guest(pl); }
+    cmd_end(r, sz, CM_CLEAR, g_cur);
+}
+/* copies / fills / readbacks: the rectangles (16 bytes) or the point (8) are copied */
+static uint64_t q_op(int type, Obj* a, uint32_t ra, uint32_t ran, Obj* b, uint32_t rb, uint32_t rbn, uint32_t v) {
+    uint32_t n = RECSZ(COp) + 32;
+    COp* r = cmd_begin(n); if (!r) return 0;
+    uint8_t* pl = (uint8_t*)r + RECSZ(COp);
+    r->a = a; r->b = b; r->v = v; r->ra = r->rb = 0;
+    if (ra) { memcpy(pl, M + ra, ran); r->ra = cmd_guest(pl); }
+    if (rb) { memcpy(pl + 16, M + rb, rbn); r->rb = cmd_guest(pl + 16); }
+    return cmd_end(r, n, (uint16_t)type, g_cur);
+}
+static char g_ftbuf[320]; static pthread_mutex_t g_ftmx = PTHREAD_MUTEX_INITIALIZER;   /* frame times computed by the replay */
+static uint64_t g_lastpres, g_lastpres2;   /* the last two Presents recorded (mode 2: the replay may lag GEARMASS "ahead" = 0..2 frames) */
+static void q_exec(CmdHdr* h) {
+    const char* sv = g_cur; g_cur = h->name;
+    switch (h->type) {
+    case CM_STATE: {
+        CState* r = (CState*)h; const uint32_t* pe = (const uint32_t*)((uint8_t*)r + RECSZ(CState)); const uint8_t* pd = (const uint8_t*)(pe + 2 * r->n);
+        for (uint32_t i = 0; i < r->n; i++) { memcpy((uint8_t*)r->mir + pe[2 * i], pd, pe[2 * i + 1]); pd += pe[2 * i + 1]; }
+        break;
+    }
+    case CM_DRAW: {
+        CDraw* r = (CDraw*)h;
+        if (g_qopen) { QRes* q = g_qopen->gx; q->att++; }   /* v1.1.3: a draw inside an occlusion query (also a skipped one) */
+        if (r->chkoff) chk_cmp((uint8_t*)r + r->chkoff, r->mir);
+        if (!r->skip) gl_draw_x(r->mir, r->pt, r->prims, r->indexed, r->base, r->minv, r->nv, r->start, r->up, r->upv, r->upstride, r->upi, r->upifmt);
+        break;
+    }
+    case CM_CLEAR: { CClear* r = (CClear*)h; gl_clear(r->mir, r->n, r->rects, r->flags, r->color, r->z, r->stencil); break; }
+    case CM_STRETCH: { COp* r = (COp*)h; gl_stretch(r->a, r->ra, r->b, r->rb, r->v); break; }
+    case CM_FILL: { COp* r = (COp*)h; gl_colorfill(r->a, r->ra, r->v); break; }
+    case CM_UPDSURF: { COp* r = (COp*)h; gl_update_surface(r->a, r->ra, r->b, r->rb); break; }
+    case CM_UPDTEX: { COp* r = (COp*)h; gl_update_texture(r->a, r->b); break; }
+    case CM_RTDATA: { COp* r = (COp*)h; gl_get_rt_data(r->a, r->b); break; }
+    case CM_TEXUP: { CTexUp* r = (CTexUp*)h; gl_tex_unlock(r->r, r->s, r->lvl, r->L, M + r->src); break; }
+    case CM_SHADER: gl_shader_new(((CObj*)h)->o); break;
+    case CM_FREE: back_free(((CObj*)h)->o); break;
+    case CM_QISSUE: {
+        CObj* r = (CObj*)h; QRes* q = r->o->gx;
+        if (q) { q_issue(r->o, r->f); pthread_mutex_lock(&g_qmx); q->gen = r->gen; pthread_mutex_unlock(&g_qmx); }
+        break;
+    }
+    case CM_PRESENT:
+        gl_present(((CObj*)h)->o);
+        if (g_qpend_n) qpend_poll();
+        cmd_set_idle_ms(g_qpend_n ? 2 : 0);   /* results still on the GPU: poll them while idle */
+        break;
+    case CM_CALL: { CCall* r = (CCall*)h; r->fn(r->a); break; }
+    case CM_FTIMES: {
+        char b[sizeof g_ftbuf]; gl_frame_times(b, sizeof b, ((CObj*)h)->f);
+        pthread_mutex_lock(&g_ftmx); memcpy(g_ftbuf, b, sizeof b); pthread_mutex_unlock(&g_ftmx);
+        break;
+    }
+    }
+    g_cur = sv;
+}
+static void q_idle(int ev) {   /* render thread: 0 start, 1 queue drained, 2 idle tick */
+    if (ev == 0) {
+        hle_cpu_place(3);
+#if defined(__linux__) || defined(__ANDROID__)
+        pthread_setname_np(pthread_self(), "me1-d3d");
+#endif
+    } else if (ev == 1) { if (g_gl == 1) gl_release(); }
+    else if (ev == 2) { if (g_qpend_n) qpend_poll(); cmd_set_idle_ms(g_qpend_n ? 2 : 0); }
+}
+static int q_start(void) {   /* at CreateDevice: the ring (guest memory) and the replay */
+    if (!g_cmdwant || g_cmd) return g_cmd;
+    uint32_t bytes = (uint32_t)g_cmdmb << 20, g = hle_vmem_alloc(0, bytes, 0x3000u);
+    if (!g) { fprintf(stderr, "[d3d] ME1_D3D_CMD=%d: no guest memory for a %d MB command ring - direct renderer calls\n", g_cmdwant, g_cmdmb); return 0; }
+    g_cmd = cmd_init(g_cmdwant, M + g, g, bytes, q_exec, q_idle);
+    if (!g_cmd) { hle_vmem_free(g, 0, 0x8000u); return 0; }
+    g_chklen = 0; for (unsigned i = 0; i < sizeof g_dgrp / sizeof g_dgrp[0]; i++) g_chklen += g_dgrp[i].len;
+    fprintf(stderr, "[d3d] command stream: ME1_D3D_CMD=%d (%s), ring %d MB%s\n", g_cmd, g_cmd == 2 ? "render thread" : "replay at Present on the game thread",
+            g_cmdmb, g_cmdchk ? ", ME1_D3D_CMD_CHECK: state compared at every draw" : "");
+    return g_cmd;
+}
+static void init_cb(void* a) { *(int*)a = gl_init(); }
+static void vkreset_cb(void* a) { *(int*)a = vk_device_reset(); }
+static int q_vk_reset(void) { int r = 0; q_call(vkreset_cb, &r); return r; }
+static void report_cb(void* a) { (void)a; gl_report(); }
+/* the "[d3d] frame" suffix: the replay computes it at its next Present (one log period late) */
+static void q_ftimes(char* o, size_t cap, uint64_t nf) {
+    pthread_mutex_lock(&g_ftmx); snprintf(o, cap, "%s", g_ftbuf); pthread_mutex_unlock(&g_ftmx);
+    CObj* r = cmd_begin(sizeof *r); if (!r) return;
+    r->o = NULL; r->f = (uint32_t)nf; cmd_end(r, sizeof *r, CM_FTIMES, g_cur);
+}
+
 /* ---- device ---- */
 static void wrf(uint32_t a, float f);
 static uint32_t fbits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
@@ -838,6 +1292,7 @@ static void reset_state(Dev* d) {
     bind(&d->rt[0], s->bb); bind(&d->ds, d->autods);
     set_vp(d, s->pp[0], s->pp[1]);
     d->recording = 0;
+    d->alld = 1;   /* v1.2.1 ME1_D3D_CMD: the next draw sends the whole state */
 }
 static void read_pp(Obj* s, uint32_t ppp) {
     for (int i = 0; i < 14; i++) s->pp[i] = rd32(ppp + 4 * i);
@@ -872,7 +1327,13 @@ static uint32_t m_CreateDevice(CPU* c) {
     for (int i = 0; i < 256; i++) d->gamma[i] = d->gamma[256 + i] = d->gamma[512 + i] = (uint16_t)(i * 257);
     g_devobj = o;
     log_pp("CreateDevice", d->swap);
-    if (g_gl < 0) g_gl = gl_init();
+    if (g_gl < 0) {
+        if (q_start()) {   /* v1.2.1: the renderer lives on the replay side (its thread with ME1_D3D_CMD=2) */
+            int r = 0; q_call(init_cb, &r); g_gl = r;
+            if (g_gl != 1) { g_cmd = 0; fprintf(stderr, "[d3d] command stream off: no GPU renderer\n"); }
+        } else g_gl = gl_init();
+    }
+    if (q_on()) { d->mir = calloc(1, sizeof *d); d->sent = calloc(1, sizeof *d); d->alld = 1; }
     fprintf(stderr, "[d3d] device %08x (behavior %x); %s\n", o->g, d->flags, g_gl == 1 ? (g_vk ? "Vulkan renderer" : "GLES backend") : "null backend: frames are not drawn");
     wr32(out, o->g); return OK_;
 }
@@ -880,7 +1341,7 @@ static uint32_t m_Reset(CPU* c) {
     Dev* d = DEVOF(SELF); uint32_t ppp = A(1);
     if (!d || !ppp) return ERR_INVALIDCALL;
     if (g_d3dlost && g_vk) {   /* v0.10.7: the game reacts to D3DERR_DEVICELOST - re-create the Vulkan device */
-        if (g_vklost && !vk_device_reset()) return D3DERR_DEVICELOST_;
+        if (g_vklost && !q_vk_reset()) return D3DERR_DEVICELOST_;
         g_d3dlost = 0;
         fprintf(stderr, "[d3d] Reset: device re-created, rendering continues\n");
     }
@@ -913,14 +1374,25 @@ void me1_perf(int64_t o[4]) { for (int i = 0; i < 4; i++) o[i] = g_perf[i]; }
 static unsigned g_cap_draws, g_cap_prims, g_cap_skipped, g_cap_last_skipped;
 static uint32_t present(Obj* bb) {
     if (g_d3dlost) {   /* v0.10.7: the game has 5 s to call Reset; otherwise we re-create the device ourselves */
-        if (!g_vk || mono() - g_d3dlostt < 5.0 || !vk_device_reset()) return D3DERR_DEVICELOST_;
+        if (!g_vk || mono() - g_d3dlostt < 5.0 || !q_vk_reset()) return D3DERR_DEVICELOST_;
         g_d3dlost = 0;
     }
     hle_cpu_place(1);   /* the render thread (no-op after the first frame of a thread) */
-    if (g_gl == 1) gl_present(bb);
+    if (g_gl == 1 && q_on()) {   /* v1.2.1: recorded; mode 1 replays the frame now, mode 2 lets the replay be one frame behind */
+        CObj* r = cmd_begin(sizeof *r);
+        if (r) {
+            r->o = bb; uint64_t pos = cmd_end(r, sizeof *r, CM_PRESENT, g_cur);
+            int ah = g_cmd == 1 ? 0 : gm_k.ahead;   /* v1.2.1 GEARMASS: 0 = wait for this frame, 1 = the previous one, 2 = the one before */
+            cmd_wait(ah <= 0 ? pos : ah == 1 ? g_lastpres : g_lastpres2);
+            g_lastpres2 = g_lastpres; g_lastpres = pos;
+        }
+        zomb_drain();
+    } else if (g_gl == 1) { gl_present(bb); if (g_qpend_n) qpend_poll(); }
+    if (gm_k.fps_limit != g_fpslimit) { g_fpslimit = gm_k.fps_limit; g_fpsnext = 0; }   /* v1.2.1: GEARMASS may change it (eco, heat) */
     double slept = g_fpslimit ? fps_limit() : 0;
     hle_adpf_frame(g_fpslimit, slept);   /* v0.10.13: ADPF hint (Android 12+; ME1_ADPF=0 disables) */
     g_st.frames++;
+    gm_frame(g_st.draws, slept, g_fpslimit);
     double t = mono();
     if (t - g_pft0 >= 0.5) {
         if (g_pft0 > 0) {
@@ -937,7 +1409,13 @@ static uint32_t present(Obj* bb) {
         uint64_t nf = g_st.frames - g_st.flast; double dt = t - g_st.tlast;
         uint32_t nres; uint64_t resv, peak; hle_vmem_stats(&nres, &resv, &peak);
         unsigned alive = 0; for (int i = 1; i < T_N; i++) alive += g_st.alive[i];
-        char gt[320] = ""; if (g_gl == 1) gl_frame_times(gt, sizeof gt, nf);
+        char gt[400] = ""; if (g_gl == 1) { if (q_on()) q_ftimes(gt, 320, nf); else gl_frame_times(gt, sizeof gt, nf); }
+        if (q_on() && nf) {   /* v1.2.1: command stream per frame */
+            static uint64_t b0, w0; static double ws0; uint64_t b, w; double ws; cmd_counters(&b, &w, &ws);
+            size_t k = strlen(gt);
+            snprintf(gt + k, sizeof gt - k, ", cmd %.0f KB/frame, game waits %.1f ms/frame", (double)(b - b0) / 1024.0 / nf, (ws - ws0) * 1e3 / nf);
+            b0 = b; w0 = w; ws0 = ws; (void)w0;
+        }
         char cap[200] = ""; size_t ck = 0; if (g_cap_last_skipped) ck = (size_t)snprintf(cap, sizeof cap, ", capped %u draws", g_cap_last_skipped);
         if (g_qs.issued != g_qs0.issued && nf) {   /* v1.1.3: occlusion queries per frame, share hidden, time spent waiting for results */
             double qi = (double)(g_qs.issued - g_qs0.issued), qr = (double)(g_qs.ready - g_qs0.ready);
@@ -1023,29 +1501,36 @@ static uint32_t m_GetDepthStencilSurface(CPU* c) {
 }
 static uint32_t m_Clear(CPU* c) {
     Dev* d = DEVOF(SELF); g_st.clears++;
-    if (d && g_gl == 1) gl_clear(d, A(1), A(2), A(3), A(4), A(5), A(6));
+    if (d && g_gl == 1) { if (q_on()) q_clear(d, A(1), A(2), A(3), A(4), A(5), A(6)); else gl_clear(d, A(1), A(2), A(3), A(4), A(5), A(6)); }
     return OK_;
 }
 static Obj* surf_arg(uint32_t g) { Obj* o = O(g); return o && o->type == T_SURF ? o : NULL; }
 static uint32_t m_StretchRect(CPU* c) {
     Obj* s = surf_arg(A(1)); Obj* t = surf_arg(A(3)); if (!s || !t) return ERR_INVALIDCALL;
-    if (g_gl == 1) gl_stretch(s, A(2), t, A(4), A(5));
+    if (g_gl == 1) { if (q_on()) q_op(CM_STRETCH, s, A(2), 16, t, A(4), 16, A(5)); else gl_stretch(s, A(2), t, A(4), A(5)); }
     return OK_;
 }
-static uint32_t m_ColorFill(CPU* c) { Obj* s = surf_arg(A(1)); if (!s) return ERR_INVALIDCALL; if (g_gl == 1) gl_colorfill(s, A(2), A(3)); return OK_; }
+static uint32_t m_ColorFill(CPU* c) { Obj* s = surf_arg(A(1)); if (!s) return ERR_INVALIDCALL; if (g_gl == 1) { if (q_on()) q_op(CM_FILL, s, A(2), 16, NULL, 0, 0, A(3)); else gl_colorfill(s, A(2), A(3)); } return OK_; }
 static uint32_t m_UpdateSurface(CPU* c) {
     Obj* s = surf_arg(A(1)); Obj* t = surf_arg(A(3)); if (!s || !t) return ERR_INVALIDCALL;
-    if (g_gl == 1) gl_update_surface(s, A(2), t, A(4));
+    if (g_gl == 1 && q_on()) {   /* v1.2.1: the source is read by the replay - its next Lock waits */
+        Obj* sr; uint32_t si; sub_mem(s, &sr, &si);
+        uint64_t pos = q_op(CM_UPDSURF, s, A(2), 16, t, A(4), 8, 0); if (pos) sr->pseq = pos;
+    } else if (g_gl == 1) gl_update_surface(s, A(2), t, A(4));
     return OK_;
 }
 static uint32_t m_UpdateTexture(CPU* c) {
     Obj* s = O(A(1)); Obj* t = O(A(2)); if (!s || !t || s->type != t->type || s->type < T_TEX || s->type > T_VOLTEX) return ERR_INVALIDCALL;
-    if (g_gl == 1) gl_update_texture(s, t);
+    if (g_gl == 1 && q_on()) { uint64_t pos = q_op(CM_UPDTEX, s, 0, 0, t, 0, 0, 0); if (pos) s->pseq = pos; }
+    else if (g_gl == 1) gl_update_texture(s, t);
     return OK_;
 }
 static uint32_t m_GetRenderTargetData(CPU* c) {
     Obj* s = surf_arg(A(1)); Obj* t = surf_arg(A(2)); if (!s || !t) return ERR_INVALIDCALL;
-    if (g_gl == 1) gl_get_rt_data(s, t);
+    if (g_gl == 1 && q_on()) {   /* v1.2.1: asynchronous - the Lock of the destination waits for it */
+        Obj* tr; uint32_t ti; sub_mem(t, &tr, &ti);
+        uint64_t pos = q_op(CM_RTDATA, s, 0, 0, t, 0, 0, 0); if (pos) tr->pseq = pos;
+    } else if (g_gl == 1) gl_get_rt_data(s, t);
     return OK_;
 }
 static uint32_t m_SetTransform(CPU* c) { Dev* d = DEVOF(SELF); uint32_t s = A(1); if (!d || !A(2)) return ERR_INVALIDCALL; if (s < 512) memcpy(d->xf[s], M + A(2), 64); return OK_; }
@@ -1063,7 +1548,7 @@ static uint32_t m_GetMaterial(CPU* c) { Dev* d = DEVOF(SELF); if (!d || !A(1)) r
 static uint32_t m_GetLightEnable(CPU* c) { if (!A(2)) return ERR_INVALIDCALL; wr32(A(2), 0); return OK_; }
 static uint32_t m_SetClipPlane(CPU* c) { Dev* d = DEVOF(SELF); if (!d || A(1) >= 8 || !A(2)) return ERR_INVALIDCALL; memcpy(d->clip[A(1)], M + A(2), 16); return OK_; }
 static uint32_t m_GetClipPlane(CPU* c) { Dev* d = DEVOF(SELF); if (!d || A(1) >= 8 || !A(2)) return ERR_INVALIDCALL; memcpy(M + A(2), d->clip[A(1)], 16); return OK_; }
-static uint32_t m_SetRenderState(CPU* c) { Dev* d = DEVOF(SELF); if (d) fdev_set(A(0), d); if (d && A(1) < 256) { if (d->rs[A(1)] == A(2)) return OK_; d->rs[A(1)] = A(2); } return OK_; }   /* v0.10.6: redundant values skipped */
+static uint32_t m_SetRenderState(CPU* c) { Dev* d = DEVOF(SELF); if (d) fdev_set(A(0), d); if (d && A(1) < 256) { if (d->rs[A(1)] == A(2)) return OK_; d->rs[A(1)] = A(2); d->rsd[A(1) >> 6] |= 1ull << (A(1) & 63); } return OK_; }   /* v0.10.6: redundant values skipped */
 static uint32_t m_GetRenderState(CPU* c) { Dev* d = DEVOF(SELF); if (!d || !A(2)) return ERR_INVALIDCALL; wr32(A(2), A(1) < 256 ? d->rs[A(1)] : 0); return OK_; }
 static uint32_t m_CreateStateBlock(CPU* c) { uint32_t pp = A(2); if (!pp) return ERR_INVALIDCALL; Obj* o = newobj(T_SB); wr32(pp, o->g); return OK_; }
 static uint32_t m_BeginStateBlock(CPU* c) { Dev* d = DEVOF(SELF); if (d) d->recording = 1; return OK_; }
@@ -1093,7 +1578,7 @@ static uint32_t m_GetSamplerState(CPU* c) {
     Dev* d = DEVOF(SELF); int s = smap(A(1)); if (!d || s < 0 || !A(3) || A(2) >= 14) return ERR_INVALIDCALL;
     wr32(A(3), d->ss[s][A(2)]); return OK_;
 }
-static uint32_t m_SetSamplerState(CPU* c) { Dev* d = DEVOF(SELF); int s = smap(A(1)); if (d) fdev_set(A(0), d); if (d && s >= 0 && A(2) < 14) { if (d->ss[s][A(2)] == A(3)) return OK_; d->ss[s][A(2)] = A(3); } return OK_; }   /* v0.10.6: redundant values skipped */
+static uint32_t m_SetSamplerState(CPU* c) { Dev* d = DEVOF(SELF); int s = smap(A(1)); if (d) fdev_set(A(0), d); if (d && s >= 0 && A(2) < 14) { if (d->ss[s][A(2)] == A(3)) return OK_; d->ss[s][A(2)] = A(3); d->ssd |= 1u << s; } return OK_; }   /* v0.10.6: redundant values skipped */
 /* v0.10.13 (R1): redundant Set{Render,Sampler}State without taking the device mutex (most of these calls are redundant).
    Only the device the locked path has seen, only when the cached value already equals the new one; ME1_D3D_FASTSTATE=0 disables. */
 static int g_faststate = -1;
@@ -1114,7 +1599,7 @@ static uint32_t m_GetNPatchMode(CPU* c) { fpush(c, 0.0); return 0; }
 static const char* const ptname[7] = { "?", "points", "lines", "linestrip", "tris", "tristrip", "trifan" };
 static int draw(const char* what, uint32_t pt, uint32_t n) {   /* v0.10.12 (P0-5): 0 = cut by the PhoneModify cap */
     unsigned md = hle_mod_maxdraws(), mp = hle_mod_maxprims();
-    if (g_qopen) { QRes* q = g_qopen->gx; q->att++; }   /* v1.1.3: a draw inside an occlusion query */
+    if (g_qopen && !q_on()) { QRes* q = g_qopen->gx; q->att++; }   /* v1.1.3: a draw inside an occlusion query (ME1_D3D_CMD: counted by the replay) */
     if ((md && g_cap_draws >= md) || (mp && g_cap_prims + n > mp)) { g_cap_skipped++; return 0; }
     g_cap_draws++; g_cap_prims += n;
     g_st.draws++; g_st.prims += n;
@@ -1123,23 +1608,32 @@ static int draw(const char* what, uint32_t pt, uint32_t n) {   /* v0.10.12 (P0-5
 }
 static uint32_t m_DrawPrimitive(CPU* c) {
     Dev* d = DEVOF(SELF); int go = draw("DrawPrimitive", A(1), A(3));
-    if (go && d && g_gl == 1) gl_draw_x(d, A(1), A(3), 0, 0, 0, 0, A(2), 0, 0, 0, 0, 0);
+    if (d && g_gl == 1 && (go || q_on())) {
+        dev_sh(d);
+        if (q_on()) q_draw(d, go, A(1), A(3), 0, 0, 0, 0, A(2), 0, 0, 0, 0, 0); else gl_draw_x(d, A(1), A(3), 0, 0, 0, 0, A(2), 0, 0, 0, 0, 0);
+    }
     return OK_;
 }
 static uint32_t m_DrawIndexedPrimitive(CPU* c) {
     Dev* d = DEVOF(SELF); int go = draw("DrawIndexedPrimitive", A(1), A(6));
-    if (go && d && g_gl == 1) gl_draw_x(d, A(1), A(6), 1, (int32_t)A(2), A(3), A(4), A(5), 0, 0, 0, 0, 0);
+    if (d && g_gl == 1 && (go || q_on())) {
+        dev_sh(d);
+        if (q_on()) q_draw(d, go, A(1), A(6), 1, (int32_t)A(2), A(3), A(4), A(5), 0, 0, 0, 0, 0);
+        else gl_draw_x(d, A(1), A(6), 1, (int32_t)A(2), A(3), A(4), A(5), 0, 0, 0, 0, 0);
+    }
     return OK_;
 }
 static uint32_t m_DrawPrimitiveUP(CPU* c) {
     Dev* d = DEVOF(SELF); g_st.updraws++; int go = draw("DrawPrimitiveUP", A(1), A(2));
-    if (go && d && g_gl == 1 && A(3)) gl_draw_x(d, A(1), A(2), 0, 0, 0, 0, 0, 1, A(3), A(4), 0, 0);
+    if (d && g_gl == 1 && q_on()) { dev_sh(d); q_draw(d, go && A(3), A(1), A(2), 0, 0, 0, 0, 0, 1, A(3), A(4), 0, 0); }
+    else if (go && d && g_gl == 1 && A(3)) gl_draw_x(d, A(1), A(2), 0, 0, 0, 0, 0, 1, A(3), A(4), 0, 0);
     if (d) { bind(&d->vb[0], NULL); d->vboff[0] = d->vbstride[0] = 0; }   /* D3D9 semantics after *UP: always unbind */
     return OK_;
 }
 static uint32_t m_DrawIndexedPrimitiveUP(CPU* c) {
     Dev* d = DEVOF(SELF); g_st.updraws++; int go = draw("DrawIndexedPrimitiveUP", A(1), A(4));
-    if (go && d && g_gl == 1 && A(5) && A(7)) gl_draw_x(d, A(1), A(4), 1, 0, A(2), A(3), 0, 1, A(7), A(8), A(5), A(6));
+    if (d && g_gl == 1 && q_on()) { dev_sh(d); q_draw(d, go && A(5) && A(7), A(1), A(4), 1, 0, A(2), A(3), 0, 1, A(7), A(8), A(5), A(6)); }
+    else if (go && d && g_gl == 1 && A(5) && A(7)) gl_draw_x(d, A(1), A(4), 1, 0, A(2), A(3), 0, 1, A(7), A(8), A(5), A(6));
     if (d) { bind(&d->vb[0], NULL); d->vboff[0] = d->vbstride[0] = 0; bind(&d->ib, NULL); }
     return OK_;
 }
@@ -1175,11 +1669,12 @@ static uint32_t cget(const void* src, uint32_t cap, uint32_t esz, uint32_t start
     if (!p || start > cap || n > cap - start) return ERR_INVALIDCALL;
     memcpy(M + p, (const uint8_t*)src + (size_t)start * esz, (size_t)n * esz); return OK_;
 }
-#define CONSTS(sfx, arr, cap, esz, v) \
-    static uint32_t m_Set##sfx(CPU* c) { Dev* d = DEVOF(SELF); if (!d) return ERR_INVALIDCALL; d->cver[v]++; return cset(d->arr, cap, esz, A(1), A(2), A(3)); } \
+#define CONSTS(sfx, arr, cap, esz, v, bits) \
+    static uint32_t m_Set##sfx(CPU* c) { Dev* d = DEVOF(SELF); if (!d) return ERR_INVALIDCALL; d->cver[v]++; \
+        uint32_t r = cset(d->arr, cap, esz, A(1), A(2), A(3)); if (!r) cmark(bits, A(1), A(3)); return r; } \
     static uint32_t m_Get##sfx(CPU* c) { Dev* d = DEVOF(SELF); return d ? cget(d->arr, cap, esz, A(1), A(2), A(3)) : ERR_INVALIDCALL; }
-CONSTS(VertexShaderConstantF, vsf, 256, 16, 0) CONSTS(VertexShaderConstantI, vsi, 16, 16, 0) CONSTS(VertexShaderConstantB, vsb, 16, 4, 0)
-CONSTS(PixelShaderConstantF, psf, 224, 16, 1) CONSTS(PixelShaderConstantI, psi, 16, 16, 1) CONSTS(PixelShaderConstantB, psb, 16, 4, 1)
+CONSTS(VertexShaderConstantF, vsf, 256, 16, 0, d->vfd) CONSTS(VertexShaderConstantI, vsi, 16, 16, 0, NULL) CONSTS(VertexShaderConstantB, vsb, 16, 4, 0, NULL)
+CONSTS(PixelShaderConstantF, psf, 224, 16, 1, d->pfd) CONSTS(PixelShaderConstantI, psi, 16, 16, 1, NULL) CONSTS(PixelShaderConstantB, psb, 16, 4, 1, NULL)
 static uint32_t m_SetStreamSource(CPU* c) {
     Dev* d = DEVOF(SELF); uint32_t n = A(1); if (!d || n >= 16) return ERR_INVALIDCALL;
     Obj* o = O(A(2)); if (o && o->type != T_VB) return ERR_INVALIDCALL;
@@ -1684,6 +2179,7 @@ static void build_vtables(void) {
 
 unsigned hle_d3d9_frames(void) { return (unsigned)__atomic_load_n(&g_st.frames, __ATOMIC_RELAXED); }
 void hle_d3d9_report(void) {
+    gm_report();
     for (int k = 0; k < DX_N; k++) if (g_dxs[k].n)
         fprintf(stderr, "[d3dx] %s: %llu calls, %llu failed, %.2f s total, %llu from cache, %llu stored (recompiled d3dx9_31.dll)\n", dx_name[k],
                 (unsigned long long)g_dxs[k].n, (unsigned long long)g_dxs[k].fail, g_dxs[k].secs, (unsigned long long)g_dxs[k].hits,
@@ -1704,7 +2200,16 @@ void hle_d3d9_report(void) {
     for (int i = 0; i < g_nshv; i++)
         fprintf(stderr, " %s_%u_%u x%u", (g_shv[i].key >> 16) == 0xFFFEu ? "vs" : "ps", g_shv[i].key >> 8 & 0xFF, g_shv[i].key & 0xFF, g_shv[i].n);
     if (g_dumpf) { fflush(g_dumpf); fprintf(stderr, "; %u dumped to %s/shaders.pak\n", g_ndumped, g_dump); } else fprintf(stderr, "\n");
-    gl_report();
+    if (q_on()) {   /* v1.2.1: the renderer's report runs on the replay side, after everything recorded */
+        if (pthread_mutex_trylock(&g_mx) == 0) { q_call(report_cb, NULL); pthread_mutex_unlock(&g_mx); }
+        char b[256]; cmd_stats(b, sizeof b);
+        fprintf(stderr, "[d3d] command stream (ME1_D3D_CMD=%d): %s; %llu state records (%.1f MB), %llu copy-on-write buffer locks (%.0f MB), "
+                "texture uploads %llu copied / %llu by reference (%.0f MB), %llu big *UP draws, %llu lock waits\n", g_cmd, b,
+                (unsigned long long)g_cs.states, g_cs.statebytes / 1048576.0, (unsigned long long)g_cs.cow, g_cs.cowmb / 1048576.0,
+                (unsigned long long)g_cs.texcopy, (unsigned long long)g_cs.texref, g_cs.texbytes / 1048576.0, (unsigned long long)g_cs.upext,
+                (unsigned long long)g_cs.lockwaits);
+        if (g_cmdchk) fprintf(stderr, "[d3d] ME1_D3D_CMD_CHECK: %llu draws compared, %llu state mismatches\n", (unsigned long long)g_chkn, (unsigned long long)g_chkbad);
+    } else gl_report();
 }
 
 #include "hle_d3d9_gl.h"

@@ -111,8 +111,9 @@ static float g_lpos[3], g_lvel[3], g_lori[6] = { 0, 0, -1, 0, 1, 0 }, g_lgain = 
 static float g_doppler = 1, g_dvel = 1, g_sos = 343.3f; static int g_dmodel = AL_INVERSE_DISTANCE_CLAMPED, g_srcdm;
 static uint32_t g_dev[4]; static int g_ndev;
 static struct { uint32_t h, dev; } g_ctx[8]; static int g_nctx; static uint32_t g_curctx;
-static int g_rate = 44100, g_log = 1, g_on = -1, g_ima4, g_lite_rate;
+static int g_rate = 44100, g_log = 1, g_on = -1, g_ima4, g_lite_rate, g_audio_tick_ms = 0, g_al_tick_us = 0;
 static float g_master = 1.0f;
+static uint64_t g_al_last_tick_ns = 0;
 static const char* g_backend = "none";
 static uint64_t st_frames, st_plays, st_bytes, st_bufdata; static unsigned st_errs, st_maxact, st_gensrc, st_genbuf, st_inuse;
 
@@ -126,9 +127,25 @@ static void al_init_once(void) {
     if ((e = getenv("ME1_AL_IMA4"))) g_ima4 = atoi(e) != 0;
     /* v0.10 "simplified calculation" (ME1_SHADER_LITE=1): mix at 32 kHz instead of the device's 48 kHz (-1/3 mixing work) */
     if ((e = getenv("ME1_SHADER_LITE")) && *e == '1' && !getenv("ME1_AL_RATE")) g_lite_rate = 32000;
+    /* T-3: ME1_AUDIO_TICK=ms — sleep this many ms per render block when no sources are playing */
+    if ((e = getenv("ME1_AUDIO_TICK")) && atoi(e) > 0) g_audio_tick_ms = atoi(e);
+    /* T-5: ME1_AL_TICK_US=us — throttle guest audio timer ticks to this interval.
+     * Host mixer keeps running at full device rate; only the guest callback is throttled.
+     * Default 0 = no throttling (every timer callback reaches the guest). */
+    if ((e = getenv("ME1_AL_TICK_US")) && atoi(e) > 0) g_al_tick_us = atoi(e);
 }
 int hle_al_enabled(void) { al_init(); return g_on; }
 uint32_t hle_al_module(void) { return hle_al_enabled() ? AL_HMOD : 0; }
+/* T-5: return 1 if the guest audio timer callback may fire now (throttled by
+ * ME1_AL_TICK_US), 0 if it should be skipped this round. Host mixer keeps
+ * running at full device rate regardless. */
+int hle_al_tick_due(uint64_t now_ns) {
+    if (!g_al_tick_us) return 1;
+    int64_t due = (int64_t)g_al_last_tick_ns + (int64_t)g_al_tick_us * 1000;
+    if ((int64_t)now_ns < due) return 0;
+    g_al_last_tick_ns = (int64_t)now_ns - due > (int64_t)g_al_tick_us * 1000 ? now_ns : (uint64_t)due;   /* far behind: no burst of catch-up ticks */
+    return 1;
+}
 
 #define LK pthread_mutex_lock(&g_mx)
 #define UL pthread_mutex_unlock(&g_mx)
@@ -478,6 +495,9 @@ void hle_al_render(int16_t* out, int frames) {
         ds_mix(mix, n);
         st_frames += (uint64_t)n; if ((unsigned)act > st_maxact) st_maxact = (unsigned)act;
         UL;
+        /* T-3: no active sources — sleep instead of spinning, so the host core
+         * can idle instead of burning cycles rendering silence. */
+        if (act == 0 && g_audio_tick_ms > 0) usleep((useconds_t)g_audio_tick_ms * 1000);
         for (int i = 0; i < 2 * n; i++) out[i] = s16(mix[i] * g_master);
         out += 2 * n; frames -= n;
     }
