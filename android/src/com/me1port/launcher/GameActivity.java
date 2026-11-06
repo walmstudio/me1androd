@@ -59,6 +59,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     static native long[] nativeStatus();
     /** {fps*10, frame ms*10, renderer 0 none/1 GLES/2 zink/3 Vulkan, fps limit}: see me1_perf() in hle_d3d9.c */
     static native long[] nativePerf();
+    static native String nativeGearmass();   /* v1.2.1 GEARMASS indicator line */
     private static final String[] RENDERERS = { "нет вывода", "GLES", "GLES (zink)", "Vulkan" };
     private ControlsOverlay overlay;
     private CursorView cursor;          /* v1.1.5 */
@@ -125,7 +126,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         root.addView(badge, bl);
         String[] env = getIntent().getStringArrayExtra("env");
         boolean showFps = false;
-        if (env != null) for (String v : env) if ("ME1_SHOW_FPS=1".equals(v)) showFps = true;
+        if (env != null) for (String v : env) if ("ME1_SHOW_FPS=1".equals(v) || "ME1_GM_HUD=1".equals(v)) showFps = true;
         if (showFps) {   /* [Port] ShowFps / ME1_SHOW_FPS=1: counter in the top-right corner (the controls toggle is top-left) */
             fps = new TextView(this);
             fps.setTextColor(0xF0A0FF90); fps.setTextSize(12); fps.setBackgroundColor(0x80000000); fps.setTypeface(android.graphics.Typeface.MONOSPACE);
@@ -160,6 +161,11 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         super.onPause(); if (overlay != null) overlay.releaseAll(); pad.releaseAll(); stopRumble();
         if (cursor != null) cursor.stop();
         polling = false; ui.removeCallbacks(poll); ui.removeCallbacks(rumblePoll);
+    }
+    /** v1.2: import / export of custom-layout profiles (CtlProfile, system file picker) */
+    @Override protected void onActivityResult(int req, int res, Intent data) {
+        if (CtlProfile.onResult(this, req, res, data)) return;
+        super.onActivityResult(req, res, data);
     }
     @Override protected void onResume() {
         super.onResume(); readPadSettings();
@@ -328,6 +334,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                     String r = p[2] >= 0 && p[2] < RENDERERS.length ? L.t(RENDERERS[(int) p[2]]) : "?";
                     String t = String.format(Locale.ROOT, L.t("%.1f FPS · %.1f мс · %s"), p[0] / 10.0, p[1] / 10.0, r);
                     if (p[3] > 0) t += L.t(" · лимит ") + p[3];
+                    String g = null;
+                    try { g = nativeGearmass(); } catch (Throwable ignored) { }
+                    if (g != null && g.length() > 0) t += "\n" + g;   /* GEARMASS: mode:level | bottleneck | CPU | GPU | heat */
                     fps.setText(t); fps.setVisibility(View.VISIBLE);
                 }
             }

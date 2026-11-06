@@ -28,13 +28,16 @@ import java.util.Locale;
  * controller mods such as ME1Controller; off = a pad emulates keyboard + mouse), rumble, rumblePhone;
  * v1.1.3: layout ("classic" | "skyrim": the on-screen Xbox-style pad of the Skyrim port - A/B/X/Y, bumpers, triggers,
  * Back/Start, a fixed stick driven from the whole left half of the screen, a phone-keyboard key; its own positions
- * s_<id> / s_stick and hidden ids "s:<id>"), nintendo (physical A/B and X/Y swapped). */
+ * s_<id> / s_stick and hidden ids "s:<id>"), nintendo (physical A/B and X/Y swapped);
+ * v1.2: layout "custom" (Winlator-style profiles, CustomControls / CtlProfile), profile (file of the active profile),
+ * seeded_<asset> (a built-in profile was copied once - not again after the user deleted it). */
 final class ControlsSettings {
     static final String PREFS = "me1controls";
     static final String[] BUTTONS = { "ЛКМ", "ПКМ", "E", "Пробел", "Shift", "Q", "G", "Tab", "1", "2", "3", "4", "M", "I", "J", "Esc" };
     static final String[] PAD_BUTTONS = { "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Back", "Start", "↑", "↓", "←", "→", "L3", "R3" };
     static final String[] SKY_BUTTONS = { "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Back", "Start", "kbd" };   /* ids of the "skyrim" layout */
     static boolean sky(SharedPreferences p) { return "skyrim".equals(p.getString("layout", "classic")); }
+    static boolean custom(SharedPreferences p) { return "custom".equals(p.getString("layout", "classic")); }
     private ControlsSettings() {}
 
     @SuppressWarnings("deprecation")
@@ -56,30 +59,41 @@ final class ControlsSettings {
         TextView lh = new TextView(a); lh.setText(L.t("Раскладка экранных кнопок")); lh.setTextSize(15);
         box.addView(lh);
         final RadioGroup rg = new RadioGroup(a);
-        final RadioButton r0 = new RadioButton(a), r1 = new RadioButton(a);
+        final RadioButton r0 = new RadioButton(a), r1 = new RadioButton(a), r2 = new RadioButton(a);
         r0.setText(L.t("Стандартная: клавиши ПК (или геймпад Xbox с модом), стик, свободная зона — камера")); r0.setId(View.generateViewId());
         r1.setText(L.t("Как в порте Skyrim: A/B/X/Y, бамперы и курки, Back/Start, вся левая половина экрана — стик, кнопка клавиатуры"));
         r1.setId(View.generateViewId());
-        rg.addView(r0); rg.addView(r1);
+        r2.setText(L.t("Своя, как в Winlator: любые кнопки, стики, крестовины, тачпады и ряды клавиш в любом месте; профили .icp"));
+        r2.setId(View.generateViewId());
+        rg.addView(r0); rg.addView(r1); rg.addView(r2);
+        final AlertDialog[] dlg = new AlertDialog[1];
+        final Button profBtn = btn(a, L.t("Профили своей раскладки…"), v -> CtlDialogs.profiles(a, ch,
+                edit == null ? null : () -> { if (dlg[0] != null) dlg[0].dismiss(); edit.run(); }));
         final TextView skyInfo = new TextView(a);
         skyInfo.setTextSize(12); skyInfo.setTextColor(Color.GRAY); skyInfo.setPadding(0, (int) (2 * dp), 0, (int) (6 * dp));
         final Runnable skyText = () -> {
             boolean on = sky(p);
+            profBtn.setVisibility(custom(p) ? View.VISIBLE : View.GONE);
+            if (custom(p)) {
+                skyInfo.setVisibility(View.VISIBLE);
+                skyInfo.setText(L.t("Профиль: ") + CtlProfile.active(a).name + L.t(". Свободное место экрана — камера, короткое касание — щелчок. Расставить и настроить элементы: «Профили своей раскладки» → «Редактировать раскладку на экране» (в игре)."));
+                return;
+            }
             skyInfo.setVisibility(on ? View.VISIBLE : View.GONE);
             skyInfo.setText(p.getBoolean("xinput", false)
                     ? L.t("Левая половина экрана — стик, правая — камера, короткое касание — щелчок; ⌨ — клавиатура телефона. Кнопки идут в игру как геймпад Xbox (включён «Геймпад XInput», нужен мод ME1Controller).")
                     : L.t("Левая половина экрана — стик, правая — камера, короткое касание — щелчок; ⌨ — клавиатура телефона. Без мода кнопки работают как клавиатура и мышь: A — E, B — Q, X — Пробел, Y — F, LB — R, RB — Shift, LT — ПКМ, RT — ЛКМ, Back — M, Start — Esc. С модом ME1Controller включите «Геймпад XInput»."));
         };
-        (sky(p) ? r1 : r0).setChecked(true); skyText.run();
+        (custom(p) ? r2 : sky(p) ? r1 : r0).setChecked(true); skyText.run();
         final Switch[] xiSw = new Switch[1];
         rg.setOnCheckedChangeListener((g, id) -> {
-            boolean on = id == r1.getId();
-            SharedPreferences.Editor e = p.edit().putString("layout", on ? "skyrim" : "classic");
-            if (on) e.putBoolean("shown", true);   /* like the Skyrim port: the pad is on screen from the start */
+            boolean on = id == r1.getId(), cu = id == r2.getId();
+            SharedPreferences.Editor e = p.edit().putString("layout", cu ? "custom" : on ? "skyrim" : "classic");
+            if (on || cu) e.putBoolean("shown", true);   /* like the Skyrim port: the pad is on screen from the start */
             e.apply(); skyText.run(); ch.run();
             padModWarning(a, p, xiSw[0]);
         });
-        box.addView(rg); box.addView(skyInfo);
+        box.addView(rg); box.addView(skyInfo); box.addView(profBtn);
         slider(a, box, p, L.t("Прозрачность кнопок"), "alpha", 20, 100, 100, v -> v + " %", ch);
         slider(a, box, p, L.t("Размер кнопок"), "size", 50, 200, 100, v -> v + " %", ch);
         slider(a, box, p, L.t("Размер стика"), "stick", 50, 200, 100, v -> v + " %", ch);
@@ -113,7 +127,6 @@ final class ControlsSettings {
         toggle(a, box, p, L.t("…на телефоне, если у геймпада нет вибромотора"), "rumblePhone", true, ch);
         LinearLayout row = new LinearLayout(a); row.setOrientation(LinearLayout.VERTICAL); row.setPadding(0, (int) (10 * dp), 0, 0);
         row.addView(btn(a, L.t("Какие кнопки показывать…"), v -> pickButtons(a, p, ch)));
-        final AlertDialog[] dlg = new AlertDialog[1];
         if (edit != null) row.addView(btn(a, L.t("Переставить кнопки (перетаскиванием)"), v -> { if (dlg[0] != null) dlg[0].dismiss(); edit.run(); }));
         row.addView(btn(a, L.t("Сбросить расположение"), v -> {
             SharedPreferences.Editor e = p.edit();
@@ -182,6 +195,7 @@ final class ControlsSettings {
         Button b = new Button(a); b.setText(t); b.setAllCaps(false); b.setOnClickListener(l); return b;
     }
     private static void pickButtons(Activity a, final SharedPreferences p, final Runnable ch) {
+        if (custom(p)) { toast(a, L.t("В своей раскладке лишние элементы удаляются в редакторе («Профили своей раскладки»)")); return; }
         final HashSet<String> hid = hidden(p);
         final String[] ids, names;   /* ids as stored in "hidden"; the "skyrim" layout has its own ("s:A", ...) */
         if (sky(p)) {

@@ -28,7 +28,9 @@ import java.util.Locale;
  * of the screen drives (no need to hit it), fingers slide from button to button, a ⌨ key for the phone keyboard (stays
  * visible when the controls are hidden). Sizes are fractions of the screen height. Buttons go through Pad: the game's
  * XInput pad with the "xinput" profile, otherwise Pad's keyboard + mouse emulation; the other half of the screen is the
- * camera (floating right stick / mouse) and a short tap there clicks. Positions (s_<id>) and hidden buttons are its own. */
+ * camera (floating right stick / mouse) and a short tap there clicks. Positions (s_<id>) and hidden buttons are its own.
+ * v1.2, layout "custom": Winlator-style free elements from a profile (CustomControls, CtlProfile: .icp import / export);
+ * the free area stays the camera / tap-to-click, the layout editor is CustomControls' own (toolbar, drag, pinch). */
 public class ControlsOverlay extends View {
     interface Mouse { void touch(MotionEvent e); }
 
@@ -50,7 +52,8 @@ public class ControlsOverlay extends View {
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG), stroke = new Paint(Paint.ANTI_ALIAS_FLAG), text = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final ArrayList<Btn> kbmBtns = new ArrayList<>(), padBtns = new ArrayList<>(), skyBtns = new ArrayList<>();
     private ArrayList<Btn> btns = kbmBtns;
-    private boolean padMode, skyMode;
+    private boolean padMode, skyMode, customMode;
+    private final CustomControls cc;
     private Btn kbdBtn; private int kbdPtr = -1;   /* skyrim layout: ⌨ (and the finger on it while the controls are hidden) */
     private float lcx, lcy;   /* xinput: centre of the floating right stick */
     private final Btn toggleBtn = new Btn("⊕", 0, -1, false);
@@ -71,6 +74,19 @@ public class ControlsOverlay extends View {
         prefs = ControlsSettings.prefs(c);
         shown = prefs.getBoolean("shown", false);
         dp = c.getResources().getDisplayMetrics().density;
+        cc = new CustomControls(new CustomControls.Host() {
+            @Override public void tap() { haptic(HapticFeedbackConstants.KEYBOARD_TAP); }
+            @Override public void keyboard() { ControlsOverlay.this.keyboard(); }
+            @Override public boolean keyboardOn() { return ControlsOverlay.this.keyboardOn(); }
+            @Override public void editElement(final CtlProfile.El el) {
+                Context ctx = getContext(); if (!(ctx instanceof Activity)) return;
+                CtlDialogs.element((Activity) ctx, el, () -> { cc.place(el); cc.save(); ControlsOverlay.this.invalidate(); },
+                        () -> { cc.remove(el); ControlsOverlay.this.invalidate(); });
+            }
+            @Override public void editDone() { finishEdit(); }
+            @Override public void invalidate() { ControlsOverlay.this.invalidate(); }
+            @Override public Context ctx() { return getContext(); }
+        }, dp);
         stroke.setStyle(Paint.Style.STROKE); stroke.setStrokeWidth(2 * dp);
         text.setTextAlign(Paint.Align.CENTER); text.setFakeBoldText(true);
         ArrayList<Btn> btns = kbmBtns;
@@ -118,7 +134,9 @@ public class ControlsOverlay extends View {
         lookScale = clamp(prefs.getInt("look", 12), 2, 40) / 10f;
         invertY = prefs.getBoolean("invertY", false); tapClick = prefs.getBoolean("tapClick", true);
         vibrate = prefs.getBoolean("haptic", true); mirror = prefs.getBoolean("mirror", false);
-        padMode = prefs.getBoolean("xinput", false); skyMode = ControlsSettings.sky(prefs);
+        padMode = prefs.getBoolean("xinput", false); skyMode = ControlsSettings.sky(prefs); customMode = ControlsSettings.custom(prefs);
+        cc.size = size; cc.mirror = mirror; cc.look = lookScale; cc.invertY = invertY; cc.tapClick = tapClick; cc.alpha = alpha;
+        if (customMode) cc.load();
         btns = skyMode ? skyBtns : padMode ? padBtns : kbmBtns;
         HashSet<String> hid = ControlsSettings.hidden(prefs);
         for (Btn b : kbmBtns) b.hidden = hid.contains(b.label);
@@ -134,6 +152,7 @@ public class ControlsOverlay extends View {
         if (w <= 0 || h <= 0) return;
         float m = 14 * dp, big = 34 * dp * size, mid = 26 * dp * size, sm = 19 * dp * size;
         toggleBtn.x = m + 18 * dp; toggleBtn.y = m + 18 * dp; toggleBtn.r = 18 * dp;
+        if (customMode) { if (mirror) toggleBtn.x = w - toggleBtn.x; cc.layout(w, h); return; }
         if (skyMode) { layoutSky(w, h, m); return; }
         if (padMode) { layoutPad(w, h, m, mid, sm); return; }
         place("Esc", toggleBtn.x + 28 * dp + sm, toggleBtn.y, sm);
@@ -215,7 +234,13 @@ public class ControlsOverlay extends View {
         releaseAll();
         ControlsSettings.show((Activity) c, this::reload, this::startEdit);
     }
-    void startEdit() { releaseAll(); editing = true; shown = true; prefs.edit().putBoolean("shown", true).apply(); invalidate(); }
+    void startEdit() { releaseAll(); editing = true; shown = true; cc.sel = null; prefs.edit().putBoolean("shown", true).apply(); invalidate(); }
+    private void finishEdit() {
+        editing = false; editPtr = -1;
+        if (customMode) { cc.sel = null; cc.save(); }
+        android.widget.Toast.makeText(getContext(), L.t("Расположение сохранено"), android.widget.Toast.LENGTH_SHORT).show();
+        invalidate();
+    }
 
     @Override public boolean onTouchEvent(MotionEvent e) {
         int act = e.getActionMasked(), idx = e.getActionIndex(), id = e.getPointerId(idx);
@@ -227,12 +252,12 @@ public class ControlsOverlay extends View {
         } else if ((act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_POINTER_UP || act == MotionEvent.ACTION_CANCEL) && id == togglePtr) {
             togglePtr = -1; removeCallbacks(longPress);
             if (act != MotionEvent.ACTION_CANCEL && !longFired && hit(toggleBtn, x, y, 24 * dp)) {
-                if (editing) { editing = false; editPtr = -1; android.widget.Toast.makeText(getContext(), L.t("Расположение сохранено"), android.widget.Toast.LENGTH_SHORT).show(); }
+                if (editing) finishEdit();
                 else setShown(!shown);
             }
             invalidate(); return true;
         }
-        if (editing) { edit(act, id, x, y, e); invalidate(); return true; }
+        if (editing) { if (customMode) cc.edit(act, id, x, y, e); else edit(act, id, x, y, e); invalidate(); return true; }
         if (!shown && skyMode && !kbdBtn.hidden) {   /* ⌨ works with the controls hidden too */
             if ((act == MotionEvent.ACTION_DOWN || act == MotionEvent.ACTION_POINTER_DOWN) && kbdPtr < 0 && hit(kbdBtn, x, y, kbdBtn.r * 0.3f)) {
                 kbdPtr = id; haptic(HapticFeedbackConstants.KEYBOARD_TAP); keyboard(); invalidate(); return true;
@@ -273,21 +298,25 @@ public class ControlsOverlay extends View {
         }
     }
     private void down(int id, float x, float y) {
-        for (Btn b : btns) if (!b.hidden && b.pointer < 0 && hit(b, x, y, skyMode ? b.r * 0.3f : 6 * dp)) {
-            b.pointer = id;
-            haptic(HapticFeedbackConstants.KEYBOARD_TAP);
-            if (b.kbd) keyboard();
-            else if (b.toggle) { b.latched = !b.latched; send(b, b.latched); }
-            else send(b, true);
-            return;
+        if (customMode) { if (cc.down(id, x, y)) return; }
+        else {
+            for (Btn b : btns) if (!b.hidden && b.pointer < 0 && hit(b, x, y, skyMode ? b.r * 0.3f : 6 * dp)) {
+                b.pointer = id;
+                haptic(HapticFeedbackConstants.KEYBOARD_TAP);
+                if (b.kbd) keyboard();
+                else if (b.toggle) { b.latched = !b.latched; send(b, b.latched); }
+                else send(b, true);
+                return;
+            }
+            float dx = x - sx, dy = y - sy;
+            boolean stickZone = skyMode ? (x < getWidth() / 2f) == (sx < getWidth() / 2f)   /* skyrim: the stick's whole half of the screen */
+                    : dx * dx + dy * dy <= (sr * 1.6f) * (sr * 1.6f);
+            if (stickPtr < 0 && stickZone) { stickPtr = id; stick(x, y); return; }
         }
-        float dx = x - sx, dy = y - sy;
-        boolean stickZone = skyMode ? (x < getWidth() / 2f) == (sx < getWidth() / 2f)   /* skyrim: the stick's whole half of the screen */
-                : dx * dx + dy * dy <= (sr * 1.6f) * (sr * 1.6f);
-        if (stickPtr < 0 && stickZone) { stickPtr = id; stick(x, y); return; }
         if (lookPtr < 0) { lookPtr = id; lx = x; ly = y; lcx = x; lcy = y; ldx = 0; ldy = 0; lt = SystemClock.uptimeMillis(); lmoved = false; }
     }
     private void move(int id, float x, float y) {
+        if (customMode && cc.move(id, x, y)) return;
         if (id == stickPtr) { stick(x, y); return; }
         if (skyMode) for (Btn b : btns) if (b.pointer == id) {   /* skyrim: a finger slides from button to button */
             if (b.kbd) return;
@@ -310,6 +339,7 @@ public class ControlsOverlay extends View {
         }
     }
     private void up(int id, float x, float y, boolean cancel) {
+        if (customMode && cc.up(id, x, y)) return;
         for (Btn b : btns) if (b.pointer == id) { b.pointer = -1; if (!b.toggle && !b.kbd) send(b, false); return; }
         if (id == stickPtr) { stickPtr = -1; kx = sx; ky = sy; keys(false, false, false, false); if (padMode || skyMode) GameActivity.pad.virtLeft(0, 0); return; }
         if (id == lookPtr) {
@@ -344,6 +374,7 @@ public class ControlsOverlay extends View {
         else GameActivity.nativeKey(b.key, down ? 1 : 0, 0);
     }
     void releaseAll() {
+        cc.releaseAll();
         for (Btn b : btns) { if (b.down()) send(b, false); b.pointer = -1; b.latched = false; }
         stickPtr = -1; kx = sx; ky = sy; keys(false, false, false, false);
         if ((padMode || skyMode) && (lookPtr >= 0 || GameActivity.pad.vBtn != 0 || GameActivity.pad.vLX != 0 || GameActivity.pad.vLY != 0)) {
@@ -363,6 +394,18 @@ public class ControlsOverlay extends View {
     /** a color with its alpha scaled by the opacity setting */
     private int a(int argb) { int al = Math.round((argb >>> 24) * alpha); return (al << 24) | (argb & 0xFFFFFF); }
     @Override protected void onDraw(Canvas c) {
+        if (customMode && (shown || editing)) {   /* v1.2: elements first, ⊕ / ✓ on top */
+            cc.alpha = alpha; cc.draw(c, editing);
+            float sa = alpha; alpha = Math.max(alpha, 0.6f);
+            drawBtn(c, toggleBtn, togglePtr >= 0 || shown || editing, editing ? "✓" : "✕");
+            alpha = sa;
+            if (padMode && lookPtr >= 0 && lmoved) {   /* floating right stick */
+                float rr = 48 * dp / Math.max(0.2f, lookScale);
+                stroke.setColor(a(0x60FFFFFF)); c.drawCircle(lcx, lcy, rr, stroke);
+                fill.setColor(a(0x50FFFFFF)); c.drawCircle(lcx + Math.max(-rr, Math.min(rr, lx - lcx)), lcy + Math.max(-rr, Math.min(rr, ly - lcy)), rr * 0.35f, fill);
+            }
+            return;
+        }
         float sa = alpha; alpha = Math.max(alpha, 0.6f);   /* ⊕ stays findable */
         drawBtn(c, toggleBtn, togglePtr >= 0 || shown || editing, editing ? "✓" : shown ? "✕" : "⊕");
         alpha = sa;

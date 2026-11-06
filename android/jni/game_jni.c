@@ -191,7 +191,8 @@ JNIEXPORT jlong JNICALL FN(nativeCursor)(JNIEnv* e, jclass cl) {
     return ((jlong)(s + 1) << 42) | ((jlong)(x & 0x1FFFFF) << 21) | (jlong)(y & 0x1FFFFF);
 }
 JNIEXPORT void JNICALL FN(nativeMouseButton)(JNIEnv* e, jclass cl, jint button, jint down) {
-    hle_ui_mouse_button(button == 1 ? (down ? 3 : 4) : (down ? 1 : 2));   /* 0 left, 1 right */
+    if (button == 3 || button == 4) { if (down) hle_ui_wheel(button == 3 ? 120 : -120); return; }   /* v1.2: wheel up / down (one notch) */
+    hle_ui_mouse_button(button == 1 ? (down ? 3 : 4) : button == 2 ? (down ? 5 : 6) : (down ? 1 : 2));   /* 0 left, 1 right, 2 middle */
 }
 /* Android KeyEvent code -> Windows virtual key + DirectInput scan code */
 static void map_key(int k, int* vk, int* dik) {
@@ -227,6 +228,19 @@ static void map_key(int k, int* vk, int* dik) {
     case 56: *vk = 0xBE; *dik = 0x34; break; case 76: *vk = 0xBF; *dik = 0x35; break;
     case 92: *vk = 0x21; *dik = 0xC9; break; case 93: *vk = 0x22; *dik = 0xD1; break;   /* PAGE_UP/DOWN */
     case 122: *vk = 0x24; *dik = 0xC7; break; case 123: *vk = 0x23; *dik = 0xCF; break; /* MOVE_HOME/END */
+    /* v1.2 (custom on-screen layouts): Insert, Caps/Num/Scroll Lock, Print Screen, Pause, the numeric keypad */
+    case 124: *vk = 0x2D; *dik = 0xD2; break; case 115: *vk = 0x14; *dik = 0x3A; break;
+    case 143: *vk = 0x90; *dik = 0x45; break; case 116: *vk = 0x91; *dik = 0x46; break;
+    case 120: *vk = 0x2C; *dik = 0xB7; break; case 121: *vk = 0x13; *dik = 0xC5; break;
+    case 154: *vk = 0x6F; *dik = 0xB5; break; case 155: *vk = 0x6A; *dik = 0x37; break;   /* NUMPAD / * */
+    case 156: *vk = 0x6D; *dik = 0x4A; break; case 157: *vk = 0x6B; *dik = 0x4E; break;   /* NUMPAD - + */
+    case 158: *vk = 0x6E; *dik = 0x53; break;                                             /* NUMPAD . */
+    default:
+        if (k >= 144 && k <= 153) {   /* NUMPAD_0..9 */
+            static const unsigned char dik_np[10] = { 0x52,0x4F,0x50,0x51,0x4B,0x4C,0x4D,0x47,0x48,0x49 };
+            *vk = 0x60 + (k - 144); *dik = dik_np[k - 144];
+        }
+        break;
     }
 }
 JNIEXPORT void JNICALL FN(nativeKey)(JNIEnv* e, jclass cl, jint code, jint down, jint uni) {
@@ -258,5 +272,11 @@ JNIEXPORT jlongArray JNICALL FN(nativePerf)(JNIEnv* e, jclass cl) {
     jlongArray a = (*e)->NewLongArray(e, 4);
     if (a) (*e)->SetLongArrayRegion(e, a, 0, 4, (const jlong*)o);
     return a;
+}
+/* v1.2.1 GEARMASS: one-line load-governor indicator for the FPS overlay ("" when GEARMASS is off / not started) */
+int gm_hud(char* out, size_t cap);
+JNIEXPORT jstring JNICALL FN(nativeGearmass)(JNIEnv* e, jclass cl) {
+    (void)cl; char b[256]; b[0] = 0; gm_hud(b, sizeof b);
+    return (*e)->NewStringUTF(e, b);
 }
 JNIEXPORT void JNICALL FN(nativeSignal)(JNIEnv* e, jclass cl, jint sig) { me1_exe_on_signal(sig); }

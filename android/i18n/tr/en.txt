@@ -208,7 +208,7 @@ J206|simplified rendering: do not touch the listed engine parameters (DynamicSha
 J207|do not pin threads to cores (by default the game and render threads run on fast cores, the rest on slow ones)
 J208|apply modifiers from <game folder>/PhoneModify (same as the “PhoneModify modifiers” switch): per-frame draw call/primitive limits, INI keys, code patches. Create a modifier: me1cfg modgen balanced|aggressive
 J209|FPS counter in the top right corner (same as “Show FPS” in the port settings)
-J210|limit the frame rate (10–240): less heat and battery drain; 0 — unlimited
+J210|limit the frame rate (10–240): less heat and battery drain; 0 — no limit (pins the limit in every GEARMASS mode)
 J211|renderer: vulkan — own D3D9→Vulkan, gles — OpenGL ES, zink — OpenGL ES via Mesa Zink (usually set by the launcher)
 J212|Vulkan: VK_LAYER_KHRONOS_validation layer if present (slow, for debugging)
 J213|Vulkan: behave like the weakest driver (no BC compression, no float filtering) — for testing

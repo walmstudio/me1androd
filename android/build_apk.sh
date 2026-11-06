@@ -10,7 +10,7 @@ B=build; rm -rf $B; mkdir -p $B/classes $B/lib/arm64-v8a $B/res $B/assets out
 echo "[1/6] libme1port.so (arm64-v8a)"
 $CC -O2 -shared -fPIC -fsigned-char -fwrapv -fno-strict-aliasing -w -Wl,-soname,libme1port.so -Wl,--gc-sections -Wl,-z,max-page-size=16384 -s \
     -I$R/runtime -I$R/runtime/khr -I$R/settings -o $B/lib/arm64-v8a/libme1port.so \
-    jni/me1port_jni.c $R/runtime/rt.c $R/runtime/rt_fp.c $R/runtime/hle_win32.c $R/runtime/hle_sys.c $R/runtime/hle_fs.c $R/runtime/hle_mod.c $R/runtime/hle_thread.c $R/runtime/hle_seh.c $R/runtime/hle_exe.c $R/runtime/hle_vmem.c $R/runtime/hle_d3d9.c $R/runtime/sm3_glsl.c $R/runtime/hle_hb.c $R/runtime/hle_input.c $R/runtime/hle_al.c \
+    jni/me1port_jni.c $R/runtime/rt.c $R/runtime/rt_fp.c $R/runtime/hle_win32.c $R/runtime/hle_sys.c $R/runtime/hle_fs.c $R/runtime/hle_mod.c $R/runtime/hle_thread.c $R/runtime/hle_seh.c $R/runtime/hle_exe.c $R/runtime/hle_vmem.c $R/runtime/hle_d3d9.c $R/runtime/hle_d3d9_cmd.c $R/runtime/gearmass.c $R/runtime/sm3_glsl.c $R/runtime/hle_hb.c $R/runtime/hle_input.c $R/runtime/hle_al.c \
     $R/settings/ini.c $R/settings/me1settings.c -lm -ldl
 # v0.9.8: libme1vkshim.so - minimal Vulkan loader over one ICD (custom drivers loaded without libadrenotools)
 $CC -O2 -shared -fPIC -fvisibility=hidden -Wl,-soname,libme1vkshim.so -Wl,-z,max-page-size=16384 -s -o $B/lib/arm64-v8a/libme1vkshim.so jni/vkshim.c

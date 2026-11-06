@@ -28,6 +28,9 @@ def build(code):
     miss=[i for i in need if KEYS[i] not in tr]
     if miss: print(code,'missing',len(miss),miss[:40])
     os.makedirs(D+'/../assets/i18n',exist_ok=True)
+    out=f'{D}/../assets/i18n/{code}.json'   # v1.2.1: keep keys added directly to the JSON (env descriptions etc.)
+    if os.path.exists(out):
+        old=json.load(open(out,encoding='utf-8')); old.update(tr); tr=old
     json.dump(tr,open(f'{D}/../assets/i18n/{code}.json','w',encoding='utf-8'),ensure_ascii=False,indent=0,sort_keys=True)
     print(code,len(tr),'keys')
 for c in sys.argv[1:]: build(c)

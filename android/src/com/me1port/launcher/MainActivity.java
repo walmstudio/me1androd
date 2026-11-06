@@ -103,6 +103,11 @@ public class MainActivity extends Activity {
     @Override public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
         if (code == REQ_STORAGE) relocate(true);
     }
+    /** v1.2: import / export of custom-layout profiles (CtlProfile, system file picker) */
+    @Override protected void onActivityResult(int req, int res, Intent data) {
+        if (CtlProfile.onResult(this, req, res, data)) return;
+        super.onActivityResult(req, res, data);
+    }
     /** files may have been copied / permission granted while we were in the background */
     @Override protected void onResume() {
         super.onResume();
@@ -658,6 +663,8 @@ public class MainActivity extends Activity {
         { "ME1_AL_IMA4=1", "сообщать игре о поддержке сжатия IMA4 ADPCM (по умолчанию нет)" },
         { "ME1_AL_SINK=null", "не выводить звук на устройство (вместе с ME1_AL_WAV — запись микса в файл)" },
         { "ME1_AL_WAV=/sdcard/Documents/me1_audio.wav", "записывать микс в WAV (только с ME1_AL_SINK=null)" },
+        { "ME1_AL_TICK_US=10000", "периодические мультимедиа-таймеры игры (звук) срабатывают не чаще раза в N мкс — меньше нагрузка на CPU; микшер работает как обычно (по умолчанию выкл.)" },
+        { "ME1_AUDIO_TICK=5", "пауза N мс в микшере, пока не играет ни один звук — меньше нагрузка на CPU в тишине, начало звука может запаздывать (по умолчанию выкл.)" },
         { "", "Графика" },
         { "ME1_FLOAT_EMU=2", "точная эмуляция float D3D9 (0·∞ = 0) ещё и в mul/mad/dp: лечит чёрные/белые точки, медленнее; 0 — выкл., 1 — по умолчанию" },
         { "ME1_SHADER_LITE=1", "упрощённый расчёт (то же, что переключатель «Упрощённый расчёт» в «Графике»): без динамических теней и теней персонажей, простые карты освещения, без размытия/глубины резкости/бликов/декалей, билинейная фильтрация, LOD персонажей ниже; FP16 там, где игра допускает half, таймер 5 мс, звук 32 кГц; 0 — выкл." },
@@ -667,15 +674,36 @@ public class MainActivity extends Activity {
         { "ME1_PHONE_MOD=1", "применять модификаторы из <папка игры>/PhoneModify (то же, что переключатель «Модификаторы PhoneModify»): лимиты вызовов/примитивов на кадр, ключи INI, патчи кода. Создать модификатор: me1cfg modgen balanced|aggressive" },
         { "ME1_SHOW_FPS=1", "счётчик FPS в правом верхнем углу (то же, что «Показывать FPS» в настройках порта)" },
         { "ME1_CURSOR=2", "курсор мыши игры: 1 — по умолчанию, виден, когда игра его показывает (меню); 2 — всегда; 0 — никогда" },
-        { "ME1_FPS_LIMIT=30", "ограничить частоту кадров (10–240): меньше нагрев и расход батареи; 0 — без ограничения" },
+        { "ME1_FPS_LIMIT=30", "ограничить частоту кадров (10–240): меньше нагрев и расход батареи; 0 — без ограничения (закрепляет лимит во всех режимах GEARMASS)" },
         { "ME1_RENDERER=vulkan", "рендерер: vulkan — свой D3D9→Vulkan, gles — OpenGL ES, zink — OpenGL ES через Mesa Zink (обычно задаёт лаунчер)" },
         { "ME1_VK_VALIDATE=1", "Vulkan: слой проверки VK_LAYER_KHRONOS_validation, если он есть (медленно, для отладки)" },
         { "ME1_VK_STRICT=1", "Vulkan: вести себя как на самом слабом драйвере (без BC-сжатия, без float-фильтрации) — для проверки" },
+        { "ME1_VK_BC=0", "Vulkan: не использовать сжатие BC (DXT), распаковывать текстуры на CPU — если на драйвере текстуры битые или чёрные (по умолчанию BC, если GPU умеет)" },
         { "ME1_VK_SPLIT=2048", "Vulkan: отправлять кадр частями по N вызовов отрисовки — обход падения драйвера Mali (DEVICE_LOST на первом тяжёлом кадре). По умолчанию включено (2048); 0 — одним сабмитом, как в v0.10.2" },
         { "ME1_GPU_TIMER=0", "не замерять время GPU на кадр (строка «[d3d] frame … GPU … ms/frame» в логе)" },
-        { "ME1_OCCLUSION=2", "запросы видимости (occlusion queries): 1 — по умолчанию, как в D3D9: невидимое отсекается, блики не светят сквозь стены; 2 — без ожидания GPU (результат с опозданием на кадр — если с 1 подтормаживает); 0 — выкл. (всё считается видимым, как до v1.1.3)" },
+        { "ME1_OCCLUSION=1", "запросы видимости (occlusion queries): 2 — по умолчанию на Android: без ожидания GPU (результат с опозданием на кадр); 1 — как в D3D9, с ожиданием GPU (точно, но может подтормаживать; по умолчанию на ПК); 0 — выкл. (всё считается видимым, как до v1.1.3)" },
+        { "ME1_D3D_CMD=2", "буфер команд D3D9 (v1.2.1): 2 — отдельный поток рендера параллельно со следующим кадром игры (по умолчанию на 4+ ядрах, кроме GEARMASS eco/off); 1 — запись и воспроизведение в том же потоке (проверка); 0 — прямые вызовы, как в 1.2" },
+        { "ME1_D3D_CMD_CHECK=1", "с ME1_D3D_CMD=1/2: сравнивать полное состояние при каждом вызове отрисовки, расхождения — в лог (медленно, для отладки)" },
+        { "ME1_D3D_CMD_MB=64", "размер буфера команд ME1_D3D_CMD, МБ (4–256, по умолчанию 32)" },
+        { "ME1_D3D_CMD_SPIN=0", "поток рендера ME1_D3D_CMD=2 без команд сразу засыпает (по умолчанию ждёт 50 мкс): меньше нагрузка на CPU, чуть больше задержка" },
+        { "ME1_GEARMASS=auto", "GEARMASS — распределение нагрузки по ядрам: auto (по умолчанию) — по замерам во время игры; eco, balance, perf, max — постоянный режим; custom — значения ME1_GM_*; off — как в 1.2 (то же, что «Режим нагрузки» в разделе «Нагрузка»)" },
+        { "ME1_GM_HUD=1", "строка GEARMASS под счётчиком FPS: режим, узкое место (CPU/GPU/ожидание), занятые ядра, загрузка GPU, нагрев" },
+        { "ME1_GM_WORKERS=2", "рабочие потоки GEARMASS (распаковка текстур, компиляция шейдеров): число 0–8 закрепляет в любом режиме; auto — по режиму" },
+        { "ME1_GM_AHEAD=2", "кадров вперёд (0–2): сколько кадров CPU готовит, пока GPU рисует; закрепляет в любом режиме" },
+        { "ME1_GM_SPIN=0", "ожидание главных потоков: 0 — сон, 1 — короткий спин, 2 — спин (быстрее, горячее)" },
+        { "ME1_GM_SPIN_US=200", "длительность короткого спина перед сном, мкс (по умолчанию 100)" },
+        { "ME1_GM_PRIME=1", "главные потоки игры — на самых быстрых ядрах (по частотам ядер), остальное — на прочих" },
+        { "ME1_GM_ADPF_MS=8", "Android: цель времени кадра для подсказок частот системе (ADPF), мс; 0 — не подсказывать" },
+        { "ME1_GM_UCLAMP=512", "нижняя граница частоты главных потоков (uclamp.min, 0–1024), если ядро системы разрешает" },
+        { "ME1_GM_ANISO=4", "анизотропная фильтрация не ниже (1–16); без переменной её поднимает сам GEARMASS, пока GPU свободен" },
+        { "ME1_GM_QUALITY=0", "не поднимать анизотропию автоматически" },
+        { "ME1_GM_THERMAL=0.8", "порог запаса по нагреву (0.3–1.5, по умолчанию 0.90): дойдя до него, «Авто» снижает нагрузку на шаг" },
+        { "ME1_GM_LOG=0", "строка [gearmass] в логе раз в N секунд (по умолчанию 5; 0 — выключить)" },
+        { "ME1_GL_PARALLEL_COMPILE=0", "OpenGL ES: не просить драйвер компилировать шейдеры в нескольких потоках (KHR_parallel_shader_compile)" },
+        { "ME1_VK_SPV_MT=0", "Vulkan: компилировать вершинный и пиксельный шейдер по очереди, а не параллельно" },
         { "ME1_INVARIANT=0", "выключить invariant gl_Position: чуть быстрее, но возможны полосы/мерцание на освещённых поверхностях (1 — по умолчанию)" },
-        { "ME1_TEX_16=0", "DXT-текстуры (распаковка на CPU) в RGBA8: лучше качество, больше памяти; 1 — по умолчанию (DXT1 → RGB5A1); 2 — ещё DXT3/5 → RGBA4" },
+        { "ME1_TEX_16=0", "DXT-текстуры (распаковка на CPU) в RGBA8: лучше качество, больше памяти; 1 — по умолчанию (DXT1 → RGB5A1); 2 — ещё DXT3/5 → RGBA4; 3 — DXT1 → RGB565 (точнее цвет, но вырезы DXT1 теряют прозрачность)" },
+        { "ME1_TEX_BC=1", "аппаратное сжатие текстур (оба рендера): 2 — по умолчанию, DXT1–5 и ATI1/2, если GPU умеет; 1 — ATI1/2 распаковывать на CPU; 0 — все DXT/ATI на CPU (если текстуры битые или чёрные)" },
         { "ME1_TEX_MAXSIZE=1024", "ограничить размер текстур (512, 1024, 2048): меньше памяти и загрузок, ниже чёткость" },
         { "ME1_GL_NOS3TC=1", "не использовать аппаратное сжатие S3TC/DXT, даже если GPU умеет (распаковка на CPU)" },
         { "ME1_GL_NORGTC=1", "не использовать аппаратное сжатие RGTC (ATI1/ATI2)" },
@@ -900,6 +928,18 @@ public class MainActivity extends Activity {
             if ("1".equals(Native.portOption(dd, "port.show_fps"))) env.put("ME1_SHOW_FPS", "1");
             String fl = Native.portOption(dd, "port.fps_limit");
             if (fl != null && fl.matches("\\d+") && Integer.parseInt(fl) > 0) env.put("ME1_FPS_LIMIT", fl);
+            /* v1.2.1 GEARMASS: section «Нагрузка» (me1port.ini [Port] Gearmass*); "Доп. переменные" below win */
+            String gm = Native.portOption(dd, "port.gearmass");
+            if (gm != null && !gm.isEmpty()) env.put("ME1_GEARMASS", gm);
+            if ("1".equals(Native.portOption(dd, "port.gm_hud"))) env.put("ME1_GM_HUD", "1");
+            String th = Native.portOption(dd, "port.gm_thermal");
+            if (th != null && th.matches("\\d+") && Integer.parseInt(th) > 0 && Integer.parseInt(th) != 90)
+                env.put("ME1_GM_THERMAL", String.format(Locale.ROOT, "%.2f", Integer.parseInt(th) / 100.0));
+            if ("custom".equals(gm)) {
+                String[][] gk = { { "port.gm_workers", "ME1_GM_WORKERS" }, { "port.gm_ahead", "ME1_GM_AHEAD" }, { "port.gm_spin", "ME1_GM_SPIN" },
+                        { "port.gm_prime", "ME1_GM_PRIME" }, { "port.gm_aniso", "ME1_GM_ANISO" } };
+                for (String[] k : gk) { String v = Native.portOption(dd, k[0]); if (v != null && !v.isEmpty() && !"auto".equals(v)) env.put(k[1], v); }
+            }
         } catch (Throwable ignored) {}
         for (String kv : prefs.getString("extraEnv", "").trim().split("\\s+")) {
             int eq = kv.indexOf('=');
