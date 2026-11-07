@@ -26,7 +26,7 @@ $(shell mkdir -p build; \
   fi; \
   mv -f build/.srcsum.new build/.srcsum)
 endif
-RT = runtime/rt.c runtime/rt_fp.c runtime/hle_win32.c runtime/hle_sys.c runtime/hle_fs.c runtime/hle_mod.c runtime/hle_thread.c runtime/hle_seh.c runtime/hle_exe.c runtime/hle_vmem.c runtime/hle_d3d9.c runtime/hle_d3d9_cmd.c runtime/gearmass.c runtime/sm3_glsl.c runtime/hle_hb.c runtime/hle_input.c runtime/hle_al.c settings/ini.c settings/me1settings.c
+RT = runtime/rt.c runtime/rt_fp.c runtime/cpu_profile.c runtime/hle_win32.c runtime/hle_sys.c runtime/hle_fs.c runtime/hle_mod.c runtime/hle_thread.c runtime/hle_seh.c runtime/hle_exe.c runtime/hle_vmem.c runtime/hle_d3d9.c runtime/hle_d3d9_cmd.c runtime/gearmass.c runtime/sm3_glsl.c runtime/hle_hb.c runtime/hle_input.c runtime/hle_al.c settings/ini.c settings/me1settings.c
 PXL = $(wildcard out/physxloader/*.c)
 build/test_pxl: $(RT) $(PXL) runtime/main_pxl.c runtime/*.h settings/*.h
 	mkdir -p build && $(CC) $(CFLAGS) -o $@ $(RT) $(PXL) runtime/main_pxl.c -lm -ldl -pthread
@@ -53,7 +53,20 @@ difftest:
 	python3 tools/difftest.py --n 200 --seed 11
 difftest-arm64:
 	python3 tools/difftest.py --n 200 --seed 11 --work /tmp/dt_arm --cc "$(ACC) -static -fsigned-char" --run qemu-aarch64-static
-.PHONY: difftest difftest-arm64
+test-x87-audit:
+	python3 tests/recomp/audit_x87_inline_native.py
+test-x87-audit-trigfix:
+	python3 tests/recomp/audit_x87_inline_native.py --trig-fix
+x87-trig-decision-check:
+	@echo "== baseline audit =="
+	python3 tests/recomp/audit_x87_inline_native.py
+	@echo "== trig-fix audit =="
+	python3 tests/recomp/audit_x87_inline_native.py --trig-fix
+	@echo "== decision: keep --trig-fix opt-in, default off =="
+test-x87-native:
+	gcc -O2 -fwrapv -fno-strict-aliasing -Iruntime tests/recomp/test_fpu_misc_native.c runtime/rt_fp.c -lm -o build/test_fpu_misc_native
+	./build/test_fpu_misc_native
+.PHONY: difftest difftest-arm64 test-x87-audit test-x87-audit-trigfix x87-trig-decision-check test-x87-native
 
 # Android arm64: PhysXLoader + recompiled PhysXCore, static (runs via adb shell or qemu-aarch64-static)
 APXC_O = $(patsubst out/physxcore/%.c,build/android/pxc/%.o,$(PXC))
@@ -64,6 +77,8 @@ build/android/test_pxl_pxc_static: $(RT) $(PXL) $(APXC_O) runtime/main_pxl.c run
 
 # settings: me1cfg CLI (replacement for MassEffectConfig.exe) and VFS/Win32 file-layer test
 SET = settings/ini.c settings/me1settings.c
+build/test_gm_resolution: $(SET) tests/test_gm_resolution.c settings/*.h
+	mkdir -p build && $(CC) -O1 -g -Wall -Wno-format-truncation -Isettings -o $@ $(SET) tests/test_gm_resolution.c -lm
 build/me1cfg: $(SET) settings/me1cfg_cli.c settings/*.h
 	mkdir -p build && $(CC) -O2 -Wall -o $@ $(SET) settings/me1cfg_cli.c
 build/android/me1cfg: $(SET) settings/me1cfg_cli.c settings/*.h
@@ -330,6 +345,28 @@ linux-check:
 build/linux/me1-linux: | linux-check
 build/linux/me1-linux: $(LRT_O) build/linux/rt/main_exe.o build/linux/rt/me1_linux.o $(LUI_O) $(CRT_O) $(CPP_O) $(PXC_O) $(DX_O) $(VB_O) $(BK_O) $(EXE_O)
 	$(CC) -o $@ $^ $(SDL_LIBS) -lm -ldl -pthread -rdynamic
+# Experimental GCC PGO for the recompiled EXE only. Use tools/pgo-linux.sh;
+# it owns build/pgo/exe and prevents accidental reuse across phases/sources.
+PGO_PROFILE_DIR := $(abspath build/pgo/profiles)
+PGO_RT_O = $(filter-out build/linux/rt/hle_win32.o,$(LRT_O)) build/pgo/rt/hle_win32.o
+PGO_EXE_O = $(patsubst out/exe/%.c,build/pgo/exe/%.o,$(EXE_C))
+ifeq ($(PGO_PHASE),train)
+PGO_FLAGS = -fprofile-generate=$(PGO_PROFILE_DIR) -fprofile-update=atomic
+else ifeq ($(PGO_PHASE),use)
+PGO_FLAGS = -fprofile-use=$(PGO_PROFILE_DIR) -fprofile-correction -Werror=missing-profile
+else
+PGO_FLAGS = -DME1_PGO_INVALID_PHASE
+endif
+build/pgo/exe/%.o: out/exe/%.c runtime/rt.h
+	@mkdir -p build/pgo/exe && $(CC) $(EXEOPT) $(PGO_FLAGS) -fwrapv -fno-strict-aliasing -Iruntime -Iout/exe -c $< -o $@
+build/pgo/rt/hle_win32.o: runtime/hle_win32.c runtime/*.h settings/*.h
+	@mkdir -p build/pgo/rt && $(CC) $(LCFLAGS) $(if $(filter train,$(PGO_PHASE)),-DME1_PGO_GCC,) -c $< -o $@
+build/pgo/rt/main_exe.o: runtime/main_exe.c runtime/*.h settings/*.h
+	@mkdir -p build/pgo/rt && $(CC) $(LCFLAGS) $(LDEF) $(if $(filter train,$(PGO_PHASE)),-DME1_PGO_GCC,) -c $< -o $@
+build/linux/me1-linux-pgo: | linux-check
+build/linux/me1-linux-pgo: $(PGO_RT_O) build/pgo/rt/main_exe.o build/linux/rt/me1_linux.o $(LUI_O) $(CRT_O) $(CPP_O) $(PXC_O) $(DX_O) $(VB_O) $(BK_O) $(PGO_EXE_O)
+	@test "$(PGO_PHASE)" = train -o "$(PGO_PHASE)" = use || { echo 'Use tools/pgo-linux.sh train|use'; exit 1; }
+	$(CC) $(if $(filter train,$(PGO_PHASE)),-fprofile-generate=$(PGO_PROFILE_DIR),) -o $@ $^ $(SDL_LIBS) -lm -ldl -pthread -rdynamic
 build/linux/me1-demo: $(LRT_O) build/linux/rt/demo_d3d9.o build/linux/rt/me1_linux_demo.o $(LUI_O)
 	$(CC) -o $@ $^ $(SDL_LIBS) -lm -ldl -pthread -rdynamic
 build/linux/libme1spv.so: android/jni/me1spv.c tools/build_spv_host.sh
@@ -341,3 +378,15 @@ linux-demo: build/linux/me1-demo build/linux/libme1spv.so build/linux/me1-launch
 linux-install: linux
 	linux/install.sh
 .PHONY: linux linux-demo linux-install
+
+# Synthetic Vulkan recovery regression (requires Vulkan headers and shader compiler).
+build/test_vk_recovery: $(RT) runtime/test_vk_recovery.c runtime/test_gl.c runtime/*.h settings/*.h
+	mkdir -p build && $(CC) $(CFLAGS) -o $@ $(RT) runtime/test_vk_recovery.c -lm -ldl -pthread
+
+# Simulated Android thermal API and Linux sensor polling (no device needed).
+build/test_gm_thermal: runtime/gearmass.c runtime/gearmass.h runtime/test_gm_thermal.c
+	mkdir -p build && $(CC) -O1 -g -Wall -Wno-unused-parameter -Iruntime -o $@ runtime/test_gm_thermal.c -lm -pthread -ldl
+
+# Synthetic statistics writer -> next-session adaptation integration.
+build/test_gm_integration: runtime/gearmass.c runtime/gearmass.h tests/test_gm_integration.c $(SET) settings/*.h
+	mkdir -p build && $(CC) -O1 -g -Wall -Wno-unused-parameter -Wno-format-truncation -Iruntime -Isettings -o $@ tests/test_gm_integration.c $(SET) -lm -pthread

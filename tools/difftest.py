@@ -8,6 +8,9 @@ from keystone import Ks, KS_ARCH_X86, KS_MODE_32
 from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UcError
 from unicorn.x86_const import *
 import recomp
+if os.getenv("DIFFTEST_LOCAL_REGS") == "1":
+    from recomp_local import LocalRecompiler
+    recomp.Recompiler = LocalRecompiler
 
 BAD = collections.Counter()
 CC = 'gcc'

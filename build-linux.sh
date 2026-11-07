@@ -13,8 +13,10 @@
 #   --demo           собрать только me1-demo и лаунчер (без файлов игры: проверка окна, звука, рендереров)
 #   --deps           поставить зависимости (apt, dnf, pacman или zypper; через sudo)
 #   --recomp         перекомпилировать все модули заново (по умолчанию — только изменившиеся)
+#   ME1_RECOMP_X87_FIX=1 — экспериментальный генератор x87 (может потребовать долгой пересборки)
 #   --release        MassEffect.exe с -O2: сборка дольше, игра быстрее
 #   -j N             параллельных задач make (по умолчанию — число ядер)
+#   --pgo            Linux PGO (GCC, opt-in): 1) generate, 2) train, 3) use. See PGO docs.
 #   --clean          удалить build/ перед сборкой (out/ с перекомпилированным кодом не трогается)
 #   --install [DIR]  после сборки установить в DIR (по умолчанию ~/.local) с ярлыком «Mass Effect» в меню
 #   -v, --verbose    показывать весь вывод make
@@ -325,11 +327,16 @@ find_python() {
 recomp_job() { # МОДУЛЬ ФАЙЛ КЛЮЧ параметры...
     _m=$1 _src=$2 _key=$3; shift 3
     rm -rf "out/.new-$_m"
-    "$PY" tools/recomp.py "$_src" "out/.new-$_m" "$@" > "build/recomp/$_m.log" 2>&1 || return 1
+    "$PY" "$RGEN" "$_src" "out/.new-$_m" "$@" > "build/recomp/$_m.log" 2>&1 || return 1
     [ -f "out/.new-$_m/image.bin" ] || return 1
     rm -rf "out/$_m" && mv "out/.new-$_m" "out/$_m" && printf '%s\n' "$_key" > "out/$_m/.build-key"
 }
 recompile() {
+    RGEN=tools/recomp.py
+    if [ "${ME1_RECOMP_X87_FIX:-0}" = 1 ]; then
+        RGEN=tools/recomp_x87_fixed.py
+        warn "Экспериментальная x87-коррекция: модули могут быть перегенерированы, сборка будет долгой"
+    fi
     mkdir -p out build/recomp build/seeds
     # seeds (начала функций за таблицей переходов инкрементальной линковки) привязаны к сборке EXE
     _es=$(sha "$EXE")
@@ -340,7 +347,7 @@ recompile() {
     fi
     if cmp -s "$SEEDS" tools/seeds/MassEffect_ilt_funcs.txt; then SEEDS=tools/seeds/MassEffect_ilt_funcs.txt; ok "MassEffect.exe — та же сборка, что у автора порта"
     else warn "MassEffect.exe другой сборки — seeds сгенерированы заново ($SEEDS); если игра падает, сообщите версию EXE"; fi
-    _th=$(cat tools/recomp.py tools/fpsse.py tools/ehscan.py tools/pefile_min.py | sha)
+    _th=$({ cat tools/recomp.py tools/fpsse.py tools/ehscan.py tools/pefile_min.py; if [ "$RGEN" != tools/recomp.py ]; then cat "$RGEN"; fi; } | sha)
     _todo=
     while IFS=: read -r _m _f _a; do
         case $_f in crt) _s=$CRT ;; cpp) _s=$CPP ;; dx) _s=$DX ;; *) _s=$(ci_path "$BIN" "$_f") || _s=$(find "$GAME" -maxdepth 5 -type f -iname "$_f" 2>/dev/null | head -n 1) ;; esac
@@ -422,7 +429,7 @@ prepare_modules() {
 }
 
 # ---------------------------------------------------------------- параметры
-GAME_ARG= DLLS_ARG= DLLS= DEMO=0 DEPS=0 FORCE=0 RELEASE=0 JOBS= CLEAN=0 INSTALL=0 PREFIX="$HOME/.local" VERBOSE=0
+GAME_ARG= DLLS_ARG= DLLS= DEMO=0 DEPS=0 FORCE=0 RELEASE=0 JOBS= CLEAN=0 INSTALL=0 PREFIX="$HOME/.local" VERBOSE=0 PGO=0
 while [ $# -gt 0 ]; do
     case $1 in
         --game)      [ $# -ge 2 ] || die "--game: укажите папку"; GAME_ARG=$2; shift ;;
