@@ -56,13 +56,17 @@ public class MainActivity extends Activity {
     private boolean updating;
     private DeviceInfo dev;
     private LinearLayout gpuBox;
+    private Tour tour;
+    private TextView gmHintView;
+    private boolean gamePending;
+    private boolean firstRunDialog, permissionPending;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         prefs = getSharedPreferences("me1port", MODE_PRIVATE);
         L.init(this);
         loadSchema();
-        if (!hasStorage()) { prefs.edit().putBoolean("asked", true).apply(); requestPermissions(new String[] { READ, WRITE }, REQ_STORAGE); }
+        if (!hasStorage()) { prefs.edit().putBoolean("asked", true).apply(); permissionPending = true; requestPermissions(new String[] { READ, WRITE }, REQ_STORAGE); }
         relocate(true);
     }
 
@@ -101,7 +105,7 @@ public class MainActivity extends Activity {
     }
 
     @Override public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
-        if (code == REQ_STORAGE) relocate(true);
+        if (code == REQ_STORAGE) { permissionPending = false; relocate(true); offerTour(); }
     }
     /** v1.2: import / export of custom-layout profiles (CtlProfile, system file picker) */
     @Override protected void onActivityResult(int req, int res, Intent data) {
@@ -112,7 +116,9 @@ public class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         if (loc != null && !loc.found) relocate(false);
-        else if (gpuBox != null) buildGpu();   /* drivers may have been copied into GameExDriver meanwhile */
+        else if (gpuBox != null) buildGpu();
+        if (gamePending && loc != null) { gamePending = false; String d = Native.refreshClean(); if (!d.isEmpty()) { pull(d); refreshAll(); } }
+        if (gmHintView != null) { String h = gmHint(); gmHintView.setText(h); gmHintView.setVisibility(h.isEmpty() ? View.GONE : View.VISIBLE); }   /* drivers may have been copied into GameExDriver meanwhile */
     }
     private boolean hasStorage() { return checkSelfPermission(READ) == PackageManager.PERMISSION_GRANTED; }
 
@@ -140,7 +146,9 @@ public class MainActivity extends Activity {
         setContentView(buildUi());
         updateStatus();
         autoFirstRun();
+        if (hasStorage()) offerTour();
     }
+    private void offerTour() { if (!permissionPending && !firstRunDialog && !prefs.getBoolean("tourShown", false) && tour != null) { prefs.edit().putBoolean("tourShown", true).apply(); getWindow().getDecorView().post(() -> { if (!isFinishing() && tour != null) tour.show(); }); } }
     /** v0.9.7: a fresh install (no settings saved yet) gets the automatic preset once */
     private void autoFirstRun() {
         if (prefs.getBoolean("autoDone", false) || dev == null) return;
@@ -150,9 +158,10 @@ public class MainActivity extends Activity {
         if (r.startsWith("-1")) return;
         String s = L.tx(Native.save());
         pull(Native.dump()); refreshAll();
+        firstRunDialog = true;
         new AlertDialog.Builder(this).setTitle(L.t("Настройки подобраны автоматически"))
                 .setMessage(r.substring(r.indexOf('\n') + 1) + (s.startsWith("OK") ? "" : "\n\n" + s.substring(s.indexOf('\n') + 1))
-                        + L.t("\n\nИзменить можно ниже (пресеты и отдельные настройки).")).setPositiveButton("OK", null).show();
+                        + L.t("\n\nИзменить можно ниже (пресеты и отдельные настройки).")).setPositiveButton("OK", null).setOnDismissListener(d -> { firstRunDialog = false; offerTour(); }).show();
     }
 
     /* ---------------- controls profile + mods (v0.9.7) ---------------- */
@@ -264,6 +273,25 @@ public class MainActivity extends Activity {
                 : L.t("Геймпад эмулирует клавиатуру и мышь: левый стик — WASD, правый — камера, RT — огонь, LT — прицел, A — E, B — Q, ")
                 + L.t("X — Пробел, Y — F, LB — R, RB — Shift, L3 — Ctrl, R3 — J, Start — Esc, Back — M, крестовина — стрелки. ")
                 + L.t("Меню — касанием."), 12, Color.GRAY, false));
+
+        root.addView(text(L.t("Режим экрана:"), 15, Color.LTGRAY, true));
+        final Spinner stretch = new Spinner(this);
+        ArrayAdapter<String> stAd = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new String[] {
+            L.t("По размеру (с пропорциями)"), L.t("Растянуть на весь экран"), L.t("Заполнить экран (обрезать края)") });
+        stAd.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        stretch.setAdapter(stAd);
+        final String sm = values.get("port.stretch_mode");
+        int smIdx = "stretch".equals(sm) ? 1 : "fill".equals(sm) ? 2 : 0;
+        stretch.setSelection(smIdx, false);
+        root.addView(stretch);
+        stretch.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> a, View v, int pos, long l) {
+                String val = pos == 1 ? "stretch" : pos == 2 ? "fill" : "fit";
+                if (!val.equals(values.get("port.stretch_mode"))) apply("port.stretch_mode", val);
+            }
+            @Override public void onNothingSelected(AdapterView<?> a) {}
+        });
+
         if (xi && !padMod) { warn.setText(L.t("⚠ Не включён мод с привязками геймпада (Config/BIOInput.ini с XboxTypeS_…) — в игре геймпад работать не будет.")); root.addView(warn); }
         if (!xi && padMod) { warn.setText(L.t("⚠ Включён мод для геймпада: ") + pmName + L.t(" — с профилем «Клавиатура и мышь» в игре не будет работать ни раскладка ПК, ни раскладка как в Skyrim. Выберите «Геймпад Xbox / XInput» или отключите мод ниже.")); root.addView(warn); }
         List<File> mods = findMods();
@@ -455,6 +483,7 @@ public class MainActivity extends Activity {
     private View buildUi() {
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(16), dp(12), dp(16), dp(24));
+        tour = new Tour(this);
         LinearLayout title = new LinearLayout(this); title.setOrientation(LinearLayout.HORIZONTAL); title.setGravity(Gravity.CENTER_VERTICAL);
         title.addView(text(L.t("Mass Effect — порт для Android"), 22, Color.WHITE, true), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         Button lang = button("🌐 " + L.CODES[L.cur()].toUpperCase(Locale.ROOT), v -> chooseLanguage());
@@ -467,7 +496,14 @@ public class MainActivity extends Activity {
                 + "\nGPU: " + (dev.gpu.isEmpty() ? "?" : dev.gpu) + (dev.glVersion.isEmpty() ? "" : " (" + dev.glVersion + ")")
                 + L.t("\nАвтопресет: ") + rep, 13, Color.LTGRAY, false));
 
-        root.addView(section(L.t("Файлы игры")));
+        Button play = button(L.t("Запустить игру"), v -> startGame());
+        play.setTextSize(20); play.setMinHeight(dp(60)); play.setBackgroundTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+        play.setEnabled(loc.found && hasStorage()); root.addView(play);
+        root.addView(button(L.t("Быстрая настройка"), v -> tour.show()));
+        tour.add(play, L.t("Добро пожаловать"), L.t("Краткий обзор лаунчера. Игра запускается этой кнопкой, когда файлы найдены и доступ разрешён."));
+        tour.add(lang, L.t("Язык интерфейса"), L.t("Выберите язык лаунчера; язык игры можно изменить отдельно."));
+        TextView filesHead = section(L.t("Файлы игры")); root.addView(filesHead);
+        tour.add(filesHead, L.t("Файлы игры"), L.t("Проверьте путь к игре и разрешение доступа; здесь также можно выбрать папку."));
         root.addView(text(L.t("Папка игры") + (loc.manual ? L.t(" (выбрана вручную)") : "") + ":\n" + pretty(gameDir), 13, Color.LTGRAY, false));
         statusView = text("", 13, Color.WHITE, false); root.addView(statusView);
         if (!hasStorage()) {
@@ -503,16 +539,20 @@ public class MainActivity extends Activity {
         HorizontalScrollView fhs = new HorizontalScrollView(this); fhs.addView(fileRow); root.addView(fhs);
 
         /* v0.10.5: PhoneModify generator (writes <game>/PhoneModify/phone_tune.txt, same texts as me1cfg modgen) */
-        root.addView(button(L.t("Генератор PhoneModify — срезать жор (лимиты кадра, эффекты)"), v -> showModGen()));
+        Button modgen = button(L.t("Генератор PhoneModify — срезать жор (лимиты кадра, эффекты)"), v -> showModGen()); root.addView(modgen);
+        tour.add(modgen, "PhoneModify", L.t("Генератор создаёт настройки лимита кадров и эффектов."));
 
-        root.addView(section(L.t("Управление и моды")));
+        TextView controlsHead = section(L.t("Управление и моды")); root.addView(controlsHead);
+        tour.add(controlsHead, L.t("Управление и моды"), L.t("Настройте физический геймпад и совместимые моды."));
         buildControls(root);
 
-        root.addView(section(L.t("Графический драйвер")));
+        TextView gpuHead = section(L.t("Графический драйвер")); root.addView(gpuHead);
+        tour.add(gpuHead, L.t("Графический драйвер"), L.t("Выберите системный или установленный графический драйвер."));
         gpuBox = new LinearLayout(this); gpuBox.setOrientation(LinearLayout.VERTICAL); root.addView(gpuBox);
         buildGpu();
 
-        root.addView(section(L.t("Пресеты")));
+        TextView presetHead = section(L.t("Пресеты")); root.addView(presetHead);
+        tour.add(presetHead, L.t("Пресеты"), L.t("Автопресет выбирает настройки по устройству; изменения нужно сохранить."));
         HorizontalScrollView hs = new HorizontalScrollView(this);
         LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL);
         row.addView(button(L.t("Авто (рекомендуется)"), v -> {
@@ -534,7 +574,15 @@ public class MainActivity extends Activity {
         String group = "";
         for (int i = 0; i < settings.length(); i++) {
             JSONObject s = settings.optJSONObject(i);
-            if (!s.optString("group").equals(group)) { group = s.optString("group"); root.addView(section(group)); }
+            if (!s.optString("group").equals(group)) {
+                group = s.optString("group"); TextView groupHead = section(group); root.addView(groupHead);
+                StringBuilder summary = new StringBuilder();
+                for (int j = i; j < settings.length(); j++) { JSONObject item = settings.optJSONObject(j); if (!group.equals(item.optString("group"))) break;
+                    String help = item.optString("help"); int end = help.indexOf(". "); if (end >= 0) help = help.substring(0, end + 1);
+                    summary.append("• ").append(item.optString("label")).append(" — ").append(help).append("\n"); }
+                tour.add(groupHead, group, summary.toString());
+                if (s.optString("id").equals("port.gearmass")) { String stats = gmHint(); gmHintView = text(stats, 12, Color.LTGRAY, false); gmHintView.setVisibility(stats.isEmpty() ? View.GONE : View.VISIBLE); root.addView(gmHintView); }
+            }
             root.addView(settingRow(s));
         }
 
@@ -547,8 +595,7 @@ public class MainActivity extends Activity {
         }));
         actions.addView(button(L.t("По умолчанию"), v -> { Native.reset(); pull(Native.dump()); refreshAll(); toast(L.t("Значения из Default*.ini — нажмите «Сохранить»")); }));
         root.addView(actions);
-        Button play = button(L.t("Запустить игру"), v -> startGame());
-        play.setEnabled(loc.found && hasStorage()); root.addView(play);
+        tour.add(actions, L.t("Сохранить и сбросить"), L.t("Сохраните изменения перед запуском; сброс возвращает стандартные значения."));
         root.addView(text(L.t("Игра открывается на весь экран (отдельный процесс). Рендер: Direct3D 9 → OpenGL ES 3. ")
                 + L.t("Управление: касание = мышь (палец — левая кнопка, второй палец — правая), «Назад» = Esc, ")
                 + L.t("USB/Bluetooth-клавиатура работает как на ПК, геймпад — см. «Управление и моды». Кнопка ⊕ в левом верхнем углу показывает экранное ")
@@ -559,15 +606,39 @@ public class MainActivity extends Activity {
                 + L.t("(несколько минут; ход компиляции показывается на экране запуска). Лог — Documents/me1exe_run.log, снимки кадров — ")
                 + L.t("Documents/me1_frames (первый кадр и каждый 1800-й)."), 12, Color.GRAY, false));
         root.addView(button(L.t("Лог последнего запуска"), v -> showLastLog()));
-        root.addView(button(L.t("Экранное управление — настройка"), v -> ControlsSettings.show(this, null, null)));
+        Button screenControls = button(L.t("Экранное управление — настройка"), v -> ControlsSettings.show(this, null, null)); root.addView(screenControls);
+        tour.add(screenControls, L.t("Экранное управление"), L.t("Три редактируемые раскладки: ПК, геймпад и своя. В игре удерживайте ⊕, чтобы открыть редактор."));
         root.addView(button(L.t("Доп. переменные (для опытов)") + (prefs.getString("extraEnv", "").trim().isEmpty() ? "" : " ✓"), v -> editExtraEnv()));
         Button test = button(L.t("Тест без окна (90 с, кадры → Documents/me1_frames)"), v -> runExeTest());
         test.setEnabled(loc.found && hasStorage()); root.addView(test);
+        tour.add(test, L.t("Лог и диагностика"), L.t("Лог помогает искать ошибки; дополнительные переменные и тест без окна предназначены для диагностики."));
+        tour.add(play, L.t("Запуск"), L.t("Сохраните настройки и запустите игру. Мастер можно открыть снова кнопкой «Быстрая настройка»."));
         root.addView(text(L.t("Тот же MassEffect.exe, но в отдельной программе без окна: кадры рисуются в память и каждые 300 ")
                 + L.t("сохраняются в PNG; завершается через 90 с после первого кадра. Вывод показывается здесь же."), 12, Color.GRAY, false));
 
         ScrollView sv = new ScrollView(this); sv.setBackgroundColor(Color.rgb(0x10, 0x14, 0x1A)); sv.addView(root);
+        tour.scroll = sv;
         return sv;
+    }
+    private String gmHint() {
+        java.util.Map<String,String> m = new java.util.HashMap<>();
+        try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(new java.io.FileInputStream(new File(docsDir, "me1_gearmass_last.txt")), "UTF-8"))) {
+            for (String line; (line = r.readLine()) != null;) { int eq = line.indexOf('='); if (eq > 0) m.put(line.substring(0,eq), line.substring(eq+1)); }
+        } catch (Exception e) { return ""; }
+        try {
+            String msg = L.t("Последний сеанс GEARMASS") + ": " + m.getOrDefault("fps_avg", "?") + " FPS / " + m.getOrDefault("fps_limit", "?") +
+                "\n" + L.t("Режимы (% игрового времени)") + " ECO / BALANCE / PERF / MAX: " + m.getOrDefault("level_eco", "?") + " / " + m.getOrDefault("level_balance", "?") + " / " + m.getOrDefault("level_perf", "?") + " / " + m.getOrDefault("level_max", "?") + "%" +
+                "\n" + L.t("Сцены (% сеанса)") + " GPU / CPU / WAIT / VIDEO: " + m.getOrDefault("class_gpu", "?") + " / " + m.getOrDefault("class_cpu", "?") + " / " + m.getOrDefault("class_wait", "?") + " / " + m.getOrDefault("class_video", "?") + "%" +
+                "\n" + L.t("Неудачных снижений") + ": " + m.getOrDefault("fails", "?");
+            double heat = Double.parseDouble(m.getOrDefault("heat_max", "-1")); if (heat >= 0) msg += " · " + L.t("Нагрев") + ": " + (int) heat + "%";
+            if (Double.parseDouble(m.getOrDefault("thermal_partial_seconds", "0")) > 0)
+                msg += "\n" + L.t("Данные датчиков были неполными; нагрев мог быть выше.");
+            double gpu = Double.parseDouble(m.getOrDefault("class_gpu", "0")), cpu = Double.parseDouble(m.getOrDefault("class_cpu", "0"));
+            if (heat >= 90) msg += "\n" + L.t("Высокий нагрев: снизьте настройки или дайте устройству остыть.");
+            else if (gpu > cpu && gpu >= 30) msg += "\n" + L.t("Часто ограничивает GPU: попробуйте снизить разрешение или эффекты.");
+            else if (cpu >= 30) msg += "\n" + L.t("Часто ограничивает CPU: проверьте фоновые приложения.");
+            return msg;
+        } catch (Exception e) { return ""; }
     }
     private TextView section(String s) {
         TextView t = text(s, 16, ACCENT, true); t.setPadding(0, dp(18), 0, dp(4)); return t;
@@ -674,6 +745,7 @@ public class MainActivity extends Activity {
         { "ME1_PHONE_MOD=1", "применять модификаторы из <папка игры>/PhoneModify (то же, что переключатель «Модификаторы PhoneModify»): лимиты вызовов/примитивов на кадр, ключи INI, патчи кода. Создать модификатор: me1cfg modgen balanced|aggressive" },
         { "ME1_SHOW_FPS=1", "счётчик FPS в правом верхнем углу (то же, что «Показывать FPS» в настройках порта)" },
         { "ME1_CURSOR=2", "курсор мыши игры: 1 — по умолчанию, виден, когда игра его показывает (меню); 2 — всегда; 0 — никогда" },
+        { "ME1_VK_ASYNC_PIPE=1", "экспериментальное создание Vulkan pipeline в фоне; если проблемы — удалить переменную или поставить 0" },
         { "ME1_FPS_LIMIT=30", "ограничить частоту кадров (10–240): меньше нагрев и расход батареи; 0 — без ограничения (закрепляет лимит во всех режимах GEARMASS)" },
         { "ME1_RENDERER=vulkan", "рендерер: vulkan — свой D3D9→Vulkan, gles — OpenGL ES, zink — OpenGL ES через Mesa Zink (обычно задаёт лаунчер)" },
         { "ME1_VK_VALIDATE=1", "Vulkan: слой проверки VK_LAYER_KHRONOS_validation, если он есть (медленно, для отладки)" },
@@ -931,6 +1003,8 @@ public class MainActivity extends Activity {
             /* v1.2.1 GEARMASS: section «Нагрузка» (me1port.ini [Port] Gearmass*); "Доп. переменные" below win */
             String gm = Native.portOption(dd, "port.gearmass");
             if (gm != null && !gm.isEmpty()) env.put("ME1_GEARMASS", gm);
+            String sm = Native.portOption(dd, "port.stretch_mode");
+            if (sm != null && !sm.isEmpty()) env.put("ME1_STRETCH_MODE", sm);
             if ("1".equals(Native.portOption(dd, "port.gm_hud"))) env.put("ME1_GM_HUD", "1");
             String th = Native.portOption(dd, "port.gm_thermal");
             if (th != null && th.matches("\\d+") && Integer.parseInt(th) > 0 && Integer.parseInt(th) != 90)
@@ -946,6 +1020,7 @@ public class MainActivity extends Activity {
             if (eq > 0) env.put(kv.substring(0, eq), kv.substring(eq + 1));
         }
         if (test) {
+            env.put("ME1_GM_RES_SKIP", "1");
             env.put("ME1_D3D_DUMP", new File(docsDir, "me1_shaders").getAbsolutePath());
             env.put("ME1_MAX_SECONDS", "90");
             env.put("ME1_MAX_FRAMES", "20000");
@@ -966,7 +1041,7 @@ public class MainActivity extends Activity {
         it.putExtra("args", new String[] { gameDir.getAbsolutePath(), docsDir.getAbsolutePath(), "-" });
         it.putExtra("env", ev);
         it.putExtra("log", new File(docsDir, "me1exe_run.log").getAbsolutePath());
-        startActivity(it);
+        gamePending = true; startActivity(it);
     }
     private static boolean interesting(String line) {
         return line.startsWith("[rt]") || line.startsWith("[exe]") || line.startsWith("[d3d") || line.startsWith("[gl]") || line.startsWith("[vk]") || line.startsWith("[bink]")

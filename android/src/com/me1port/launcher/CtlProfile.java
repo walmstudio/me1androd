@@ -32,7 +32,7 @@ final class CtlProfile {
     static final class El {
         String type = "BUTTON", shape = "CIRCLE", text = "", range = "FROM_0_TO_9";
         String[] bind = { "NONE", "NONE", "NONE", "NONE" };
-        float scale = 1f, x = 0.5f, y = 0.5f; boolean toggle; int iconId, orient, cells = 4;
+        float scale = 1f, x = 0.5f, y = 0.5f; boolean toggle, zone, hidden; int iconId, orient, cells = 4, color; String tag = "";
         /* runtime state (CustomControls) */
         float cx, cy, hw, hh, nx, ny, scroll, scroll0, dx0, dy0, lx, ly, mvx, mvy;
         int ptr = -1, cell = -1, dirs; boolean latched, pressed, moved, cellDown; long t0; Runnable task;
@@ -41,7 +41,8 @@ final class CtlProfile {
         boolean is(String t) { return type.equals(t); }
         El copy() {
             El e = new El(); e.type = type; e.shape = shape; e.text = text; e.range = range; e.bind = bind.clone();
-            e.scale = scale; e.x = x; e.y = y; e.toggle = toggle; e.iconId = iconId; e.orient = orient; e.cells = cells; e.resolve();
+            e.scale = scale; e.x = x; e.y = y; e.toggle = toggle; e.iconId = iconId; e.orient = orient; e.cells = cells; e.zone = zone; e.hidden = hidden; e.color = color; e.tag = tag;
+            e.resolve();
             return e;
         }
         /** keys of a RANGE_BUTTON in display order */
@@ -60,6 +61,7 @@ final class CtlProfile {
             JSONArray b = new JSONArray(); for (String s : bind) b.put(s); o.put("bindings", b);
             o.put("scale", (double) scale); o.put("x", (double) x); o.put("y", (double) y);
             o.put("toggleSwitch", toggle); o.put("text", text); o.put("iconId", iconId);
+            if (zone) o.put("zone", true); if (hidden) o.put("hidden", true); if (color != 0) o.put("color", color); if (!tag.isEmpty()) o.put("tag", tag);
             if (is("RANGE_BUTTON")) { o.put("range", range); if (orient != 0) o.put("orientation", orient); o.put("bindingCount", cells); }
             return o;
         }
@@ -73,18 +75,20 @@ final class CtlProfile {
             e.toggle = o.optBoolean("toggleSwitch", false); e.text = o.optString("text", ""); e.iconId = o.optInt("iconId", 0);
             e.range = pick(o.optString("range", "FROM_0_TO_9"), RANGES, "FROM_0_TO_9"); e.orient = o.optInt("orientation", 0) != 0 ? 1 : 0;
             e.cells = Math.max(2, Math.min(12, o.optInt("bindingCount", 4)));
+            e.zone = o.optBoolean("zone", false); e.hidden = o.optBoolean("hidden", false); e.color = o.optInt("color", 0); e.tag = o.optString("tag", "");
             e.resolve();
             return e;
         }
     }
 
-    int id; String name = "", file; float cursorSpeed = 1f; boolean builtin;
+    int id; String name = "", file; float cursorSpeed = 1f; boolean builtin, slide;
     final ArrayList<El> els = new ArrayList<>();
 
     static CtlProfile parse(String json) throws Exception {
         JSONObject o = new JSONObject(json);
         CtlProfile p = new CtlProfile();
         p.id = o.optInt("id", 0); p.name = o.optString("name", "").trim(); p.cursorSpeed = clamp((float) o.optDouble("cursorSpeed", 1), 0.1f, 5f);
+        p.slide = o.optBoolean("slide", false);
         JSONArray a = o.optJSONArray("elements");
         if (a != null) for (int i = 0; i < a.length(); i++) { JSONObject e = a.optJSONObject(i); if (e != null) p.els.add(El.parse(e)); }
         if (p.name.isEmpty()) p.name = L.t("Без названия");
@@ -93,7 +97,7 @@ final class CtlProfile {
     String json() {
         try {
             JSONObject o = new JSONObject();
-            o.put("id", id); o.put("name", name); o.put("cursorSpeed", (double) cursorSpeed);
+            o.put("id", id); o.put("name", name); o.put("cursorSpeed", (double) cursorSpeed); if (slide) o.put("slide", true);
             JSONArray a = new JSONArray(); for (El e : els) a.put(e.json()); o.put("elements", a);
             return o.toString();
         } catch (Exception e) { return "{}"; }
@@ -126,12 +130,31 @@ final class CtlProfile {
             }
         } catch (Exception ignored) {}
     }
+    static void seedOne(Context c, String file) {
+        if (file == null || !file.startsWith("builtin_")) return;
+        try (InputStream in = c.getAssets().open("controls/" + file.substring(8))) { write(new File(dir(c), file), read(in)); }
+        catch (Exception ignored) {}
+    }
+    private static void upgradeMass(Context c) {
+        android.content.SharedPreferences prefs = ControlsSettings.prefs(c);
+        if (prefs.getBoolean("mass_keys_v122", false)) return;
+        CtlProfile old = load(c, "builtin_mass_effect.icp");
+        if (old != null) try (InputStream in = c.getAssets().open("controls/mass_effect.icp")) {
+            CtlProfile fresh = parse(read(in));
+            for (String key : new String[]{"KEY_G", "KEY_TAB", "KEY_J", "SPECIAL_KEYBOARD"}) {
+                boolean exists = false; for (El e : old.els) for (String b : e.bind) if (key.equals(b)) exists = true;
+                if (!exists) for (El e : fresh.els) if (key.equals(e.bind[0])) { old.els.add(e.copy()); break; }
+            }
+            if (!save(c, old)) return;
+        } catch (Exception e) { return; }
+        prefs.edit().putBoolean("mass_keys_v122", true).apply();
+    }
     static ArrayList<CtlProfile> list(Context c) {
         seed(c, false);
         ArrayList<CtlProfile> r = new ArrayList<>();
         File[] fs = dir(c).listFiles();
         if (fs != null) for (File f : fs) {
-            if (!f.getName().endsWith(".icp")) continue;
+            if (!f.getName().endsWith(".icp") || f.getName().startsWith("layout")) continue;
             try (InputStream in = new FileInputStream(f)) { CtlProfile p = parse(read(in)); p.file = f.getName(); p.builtin = p.file.startsWith("builtin_"); r.add(p); }
             catch (Exception ignored) {}
         }
@@ -146,8 +169,27 @@ final class CtlProfile {
     }
     /** the active profile (the first one when none is chosen); never null */
     static CtlProfile active(Context c) {
-        seed(c, false);
-        CtlProfile p = load(c, ControlsSettings.prefs(c).getString("profile", null));
+        seed(c, false); upgradeMass(c);
+        android.content.SharedPreferences prefs = ControlsSettings.prefs(c);
+        String layout = prefs.getString("layout", "classic");
+        if (!layout.equals("custom")) {
+            String file = layout.equals("skyrim") ? "layout2.icp" : prefs.getBoolean("xinput", false) ? "layout1x.icp" : "layout1.icp";
+            CtlProfile built = load(c, file);
+            if (built == null) try (InputStream in = c.getAssets().open("layouts/" + file)) {
+                built = parse(read(in)); built.file = file;
+                java.util.HashSet<String> hid = ControlsSettings.hidden(prefs);
+                for (El el : built.els) {
+                    String tag = el.tag; if (tag.isEmpty()) continue;
+                    String key = layout.equals("skyrim") ? "s_" + tag : "p_" + tag;
+                    String pos = prefs.getString(key, null);
+                    if (pos != null) try { String[] xy = pos.split(","); el.x = clamp(Float.parseFloat(xy[0]), 0, 1); el.y = clamp(Float.parseFloat(xy[1]), 0, 1); } catch (Exception ignored) {}
+                    el.hidden = hid.contains(layout.equals("skyrim") ? "s:" + tag : tag);
+                }
+                save(c, built);
+            } catch (Exception ignored) {}
+            if (built != null) return built;
+        }
+        CtlProfile p = load(c, prefs.getString("profile", null));
         if (p != null) return p;
         ArrayList<CtlProfile> l = list(c);
         if (!l.isEmpty()) { p = l.get(0); setActive(c, p); return p; }
@@ -169,7 +211,7 @@ final class CtlProfile {
         if (p.file != null && p.file.equals(ControlsSettings.prefs(c).getString("profile", null))) ControlsSettings.prefs(c).edit().remove("profile").apply();
     }
     CtlProfile copy(String newName) {
-        CtlProfile p = new CtlProfile(); p.id = 0; p.name = newName; p.cursorSpeed = cursorSpeed;
+        CtlProfile p = new CtlProfile(); p.id = 0; p.name = newName; p.cursorSpeed = cursorSpeed; p.slide = slide;
         for (El e : els) p.els.add(e.copy());
         return p;
     }

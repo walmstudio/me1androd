@@ -30,6 +30,10 @@ JNIEXPORT jstring JNICALL FN(load)(JNIEnv* e, jclass cl, jstring jg, jstring jd)
     jrel(e, jg, g); jrel(e, jd, d);
     char* s = me1cfg_dump(&g_cfg); jstring r = js(e, s); free(s); return r;
 }
+JNIEXPORT jstring JNICALL FN(refreshClean)(JNIEnv* e, jclass cl) {
+    if (!g_loaded || me1cfg_refresh_clean(&g_cfg)) return js(e, "");
+    char* s = me1cfg_dump(&g_cfg); jstring r = js(e, s); free(s); return r;
+}
 JNIEXPORT jstring JNICALL FN(dump)(JNIEnv* e, jclass cl) {
     if (!g_loaded) return js(e, "");
     char* s = me1cfg_dump(&g_cfg); jstring r = js(e, s); free(s); return r;

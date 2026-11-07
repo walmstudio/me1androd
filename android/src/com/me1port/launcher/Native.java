@@ -9,6 +9,8 @@ public final class Native {
     /** loads all settings; returns "id=value\tsource\n" lines */
     public static native String load(String gameDir, String docsDir);
     public static native String dump();
+    /** Refresh saved values without discarding unsaved edits. */
+    public static native String refreshClean();
     /** "" on success, otherwise an error message */
     public static native String set(String id, String value);
     public static native String preset(String id);

@@ -25,7 +25,7 @@ final class CustomControls {
     private final Host host; private final float dp;
     CtlProfile prof; ArrayList<El> els = new ArrayList<>();
     private int W, H; private float s = 10;
-    float size = 1, look = 1.2f, alpha = 1; boolean mirror, invertY, tapClick = true;
+    float size = 1, stickSize = 1, look = 1.2f, alpha = 1; boolean mirror, invertY, tapClick = true;
     /* editor */
     El sel; private int ePtr = -1, ePtr2 = -1; private float edx, edy, ex0, ey0, pinch0, scale0; private boolean eMoved, wasSel;
     private static final String[] TB = { "Добавить", "Настроить", "Копия", "Удалить", "Готово" };
@@ -54,7 +54,7 @@ final class CustomControls {
         for (El e : els) place(e);
     }
     void place(El e) {
-        float k = s * e.scale * size, hw, hh;
+        float k = s * e.scale * (e.is("STICK") ? stickSize : size), hw, hh;
         switch (e.type) {
         case "BUTTON":
             if (e.shape.equals("RECT") || e.shape.equals("ROUND_RECT")) { hw = 4 * k; hh = 2 * k; }
@@ -74,14 +74,22 @@ final class CustomControls {
         return Math.abs(dx) <= e.hw + slack && Math.abs(dy) <= e.hh + slack;
     }
     private El at(float x, float y, boolean free) {
-        for (int i = els.size() - 1; i >= 0; i--) { El e = els.get(i); if ((!free || e.ptr < 0) && hit(e, x, y, 4 * dp)) return e; }
+        for (int i = els.size() - 1; i >= 0; i--) { El e = els.get(i); if (!e.hidden && (!free || e.ptr < 0) && hit(e, x, y, 4 * dp)) return e; }
         return null;
     }
     boolean contains(float x, float y) { return at(x, y, false) != null; }
+    boolean keyboardDown(int id, float x, float y) {
+        for (El e : els) if (!e.hidden && e.ptr < 0 && first(e).kind == Bind.KBD && hit(e, x, y, 4 * dp)) {
+            e.ptr = id; host.tap(); button(e, true); return true;
+        }
+        return false;
+    }
+    void drawKeyboard(Canvas c) { for (El e : els) if (!e.hidden && first(e).kind == Bind.KBD) drawEl(c, e, false); }
 
     /* ---- input ---- */
     boolean down(int id, float x, float y) {
         El e = at(x, y, true);
+        if (e == null) for (El q : els) if (!q.hidden && q.zone && q.is("STICK") && q.ptr < 0 && (x < W / 2f) == (q.cx < W / 2f)) { e = q; break; }
         if (e == null) return false;
         e.ptr = id; e.moved = false; e.t0 = SystemClock.uptimeMillis(); e.lx = e.dx0 = x; e.ly = e.dy0 = y;
         host.tap();
@@ -103,6 +111,12 @@ final class CustomControls {
     boolean move(int id, float x, float y) {
         El e = null; for (El q : els) if (q.ptr == id) { e = q; break; }
         if (e == null) return false;
+        if (prof != null && prof.slide && e.is("BUTTON") && !e.toggle && first(e).kind != Bind.KBD) {
+            El next = at(x, y, true);
+            if (next != null && next.is("BUTTON") && !next.toggle && first(next).kind != Bind.KBD && hit(next, x, y, 0)) {
+                button(e, false); e.ptr = -1; next.ptr = id; next.dx0 = x; next.dy0 = y; button(next, true); host.tap(); return true;
+            }
+        }
         if (!e.moved && Math.abs(x - e.dx0) + Math.abs(y - e.dy0) > 10 * dp) e.moved = true;
         switch (e.type) {
         case "STICK": stick(e, x, y); break;
@@ -262,7 +276,7 @@ final class CustomControls {
             for (float x = 0; x < W; x += 4 * s) c.drawLine(x, 0, x, H, stroke);
             for (float y = 0; y < H; y += 4 * s) c.drawLine(0, y, W, y, stroke);
         }
-        for (El e : els) drawEl(c, e, editing);
+        for (El e : els) if (!e.hidden) drawEl(c, e, editing);
         if (editing) drawEditor(c);
     }
     private static final int FILL = 0x38101418, FILL_ON = 0x80FFB040, LINE = 0xB0FFFFFF, LINE_ON = 0xE0FFB040, INK = 0xE8FFFFFF, SEL = 0xFF40C4FF;
@@ -275,13 +289,13 @@ final class CustomControls {
         float l = e.cx - e.hw, t = e.cy - e.hh, r = e.cx + e.hw, b = e.cy + e.hh;
         switch (e.type) {
         case "BUTTON": {
-            fill.setColor(a(on ? FILL_ON : FILL));
+            fill.setColor(a(on ? FILL_ON : e.color != 0 ? e.color : FILL));
             if (e.shape.equals("CIRCLE")) { c.drawCircle(e.cx, e.cy, e.hw, fill); c.drawCircle(e.cx, e.cy, e.hw, stroke); }
             else {
                 float rr = e.shape.equals("ROUND_RECT") ? e.hh : e.shape.equals("SQUARE") ? e.hh * 0.18f : 0;
                 rf.set(l, t, r, b); c.drawRoundRect(rf, rr, rr, fill); c.drawRoundRect(rf, rr, rr, stroke);
             }
-            label(c, labelOf(e), e.cx, e.cy, e.hw * 1.6f, e.hh * (e.shape.equals("CIRCLE") ? 0.8f : 0.9f), INK);
+            label(c, labelOf(e), e.cx, e.cy, e.hw * 1.6f, e.hh * (e.shape.equals("CIRCLE") ? 0.8f : 0.9f), e.color != 0 && !on && (((e.color >> 16) & 255) * 299 + ((e.color >> 8) & 255) * 587 + (e.color & 255) * 114) > 145000 ? 0xFF15191E : INK);
             if (e.toggle) { fill.setColor(a(e.latched ? 0xF0FFB040 : 0x80FFFFFF)); c.drawCircle(e.cx, e.cy + e.hh * 0.72f, Math.max(2 * dp, e.hh * 0.07f), fill); }
             break;
         }

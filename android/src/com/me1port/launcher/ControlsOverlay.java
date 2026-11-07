@@ -134,8 +134,8 @@ public class ControlsOverlay extends View {
         lookScale = clamp(prefs.getInt("look", 12), 2, 40) / 10f;
         invertY = prefs.getBoolean("invertY", false); tapClick = prefs.getBoolean("tapClick", true);
         vibrate = prefs.getBoolean("haptic", true); mirror = prefs.getBoolean("mirror", false);
-        padMode = prefs.getBoolean("xinput", false); skyMode = ControlsSettings.sky(prefs); customMode = ControlsSettings.custom(prefs);
-        cc.size = size; cc.mirror = mirror; cc.look = lookScale; cc.invertY = invertY; cc.tapClick = tapClick; cc.alpha = alpha;
+        padMode = prefs.getBoolean("xinput", false); skyMode = ControlsSettings.sky(prefs); customMode = true;
+        cc.size = size; cc.stickSize = stickSize; cc.mirror = mirror; cc.look = lookScale; cc.invertY = invertY; cc.tapClick = tapClick; cc.alpha = alpha;
         if (customMode) cc.load();
         btns = skyMode ? skyBtns : padMode ? padBtns : kbmBtns;
         HashSet<String> hid = ControlsSettings.hidden(prefs);
@@ -258,7 +258,12 @@ public class ControlsOverlay extends View {
             invalidate(); return true;
         }
         if (editing) { if (customMode) cc.edit(act, id, x, y, e); else edit(act, id, x, y, e); invalidate(); return true; }
-        if (!shown && skyMode && !kbdBtn.hidden) {   /* ⌨ works with the controls hidden too */
+        if (!shown && customMode) {
+            if ((act == MotionEvent.ACTION_DOWN || act == MotionEvent.ACTION_POINTER_DOWN) && cc.keyboardDown(id, x, y)) { invalidate(); return true; }
+            if ((act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_POINTER_UP) && cc.up(id, x, y)) { invalidate(); return true; }
+            if (act == MotionEvent.ACTION_CANCEL) cc.releaseAll();
+        }
+        if (!shown && !customMode && skyMode && !kbdBtn.hidden) {   /* ⌨ works with the controls hidden too */
             if ((act == MotionEvent.ACTION_DOWN || act == MotionEvent.ACTION_POINTER_DOWN) && kbdPtr < 0 && hit(kbdBtn, x, y, kbdBtn.r * 0.3f)) {
                 kbdPtr = id; haptic(HapticFeedbackConstants.KEYBOARD_TAP); keyboard(); invalidate(); return true;
             }
@@ -409,7 +414,7 @@ public class ControlsOverlay extends View {
         float sa = alpha; alpha = Math.max(alpha, 0.6f);   /* ⊕ stays findable */
         drawBtn(c, toggleBtn, togglePtr >= 0 || shown || editing, editing ? "✓" : shown ? "✕" : "⊕");
         alpha = sa;
-        if (!shown && !editing) { if (skyMode && !kbdBtn.hidden) drawSky(c, kbdBtn, kbdPtr >= 0 || keyboardOn()); return; }
+        if (!shown && !editing) { if (customMode) cc.drawKeyboard(c); else if (skyMode && !kbdBtn.hidden) drawSky(c, kbdBtn, kbdPtr >= 0 || keyboardOn()); return; }
         if (editing) { float s = alpha; alpha = 1f; banner(c); alpha = s; }
         if (skyMode) { drawSkyAll(c); return; }
         fill.setColor(a(editing && editStick ? 0x60FFB040 : 0x30FFFFFF)); c.drawCircle(sx, sy, sr, fill);

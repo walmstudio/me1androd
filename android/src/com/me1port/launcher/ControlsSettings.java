@@ -60,10 +60,10 @@ final class ControlsSettings {
         box.addView(lh);
         final RadioGroup rg = new RadioGroup(a);
         final RadioButton r0 = new RadioButton(a), r1 = new RadioButton(a), r2 = new RadioButton(a);
-        r0.setText(L.t("Стандартная: клавиши ПК (или геймпад Xbox с модом), стик, свободная зона — камера")); r0.setId(View.generateViewId());
-        r1.setText(L.t("Как в порте Skyrim: A/B/X/Y, бамперы и курки, Back/Start, вся левая половина экрана — стик, кнопка клавиатуры"));
+        r0.setText(L.t("Раскладка 1 — ПК: привычные клавиши; удобно без мода, много кнопок на экране")); r0.setId(View.generateViewId());
+        r1.setText(L.t("Раскладка 2 — геймпад: цветные кнопки и стик на левой половине; XInput требует мод"));
         r1.setId(View.generateViewId());
-        r2.setText(L.t("Своя, как в Winlator: любые кнопки, стики, крестовины, тачпады и ряды клавиш в любом месте; профили .icp"));
+        r2.setText(L.t("Раскладка 3 — своя: профили .icp как в Winlator; больше свободы, нужна настройка"));
         r2.setId(View.generateViewId());
         rg.addView(r0); rg.addView(r1); rg.addView(r2);
         final AlertDialog[] dlg = new AlertDialog[1];
@@ -127,13 +127,16 @@ final class ControlsSettings {
         toggle(a, box, p, L.t("…на телефоне, если у геймпада нет вибромотора"), "rumblePhone", true, ch);
         LinearLayout row = new LinearLayout(a); row.setOrientation(LinearLayout.VERTICAL); row.setPadding(0, (int) (10 * dp), 0, 0);
         row.addView(btn(a, L.t("Какие кнопки показывать…"), v -> pickButtons(a, p, ch)));
-        if (edit != null) row.addView(btn(a, L.t("Переставить кнопки (перетаскиванием)"), v -> { if (dlg[0] != null) dlg[0].dismiss(); edit.run(); }));
+        if (edit != null) row.addView(btn(a, L.t("Редактировать раскладку на экране"), v -> { if (dlg[0] != null) dlg[0].dismiss(); edit.run(); }));
         row.addView(btn(a, L.t("Сбросить расположение"), v -> {
+            if (custom(p)) { CtlProfile current = CtlProfile.active(a); if (current.builtin) { new java.io.File(CtlProfile.dir(a), current.file).delete(); CtlProfile.seedOne(a, current.file); } }
+            else { for (String f : new String[]{"layout1.icp", "layout1x.icp", "layout2.icp"}) new java.io.File(CtlProfile.dir(a), f).delete(); }
             SharedPreferences.Editor e = p.edit();
-            for (String k : p.getAll().keySet()) if (k.startsWith("p_") || k.startsWith("s_")) e.remove(k);
+            for (String k : p.getAll().keySet()) if (k.startsWith("p_") || k.startsWith("s_") || k.equals("hidden")) e.remove(k);
             e.apply(); ch.run(); toast(a, L.t("Кнопки на стандартных местах"));
         }));
         row.addView(btn(a, L.t("Всё по умолчанию"), v -> {
+            for (String f : new String[]{"layout1.icp", "layout1x.icp", "layout2.icp"}) new java.io.File(CtlProfile.dir(a), f).delete();
             boolean shown = p.getBoolean("shown", false);
             String pm = p.getString("padMod", null);   /* v1.1.4: with a controller mod on, the default profile is XInput */
             SharedPreferences.Editor e = p.edit().clear().putBoolean("shown", shown);
@@ -195,7 +198,18 @@ final class ControlsSettings {
         Button b = new Button(a); b.setText(t); b.setAllCaps(false); b.setOnClickListener(l); return b;
     }
     private static void pickButtons(Activity a, final SharedPreferences p, final Runnable ch) {
-        if (custom(p)) { toast(a, L.t("В своей раскладке лишние элементы удаляются в редакторе («Профили своей раскладки»)")); return; }
+        final CtlProfile profile = CtlProfile.active(a);
+        final String[] names = new String[profile.els.size()]; final boolean[] checked = new boolean[names.length];
+        for (int i = 0; i < names.length; i++) { CtlProfile.El e = profile.els.get(i); String label = e.text;
+            if (label.isEmpty()) { if (e.is("RANGE_BUTTON")) label = e.range; else if (e.is("STICK")) label = L.t("Стик"); else if (e.is("D_PAD")) label = L.t("Крестовина"); else label = Bind.of(e.bind[0]).label(); }
+            names[i] = label; checked[i] = !e.hidden;
+        }
+        new AlertDialog.Builder(a).setTitle(L.t("Кнопки на экране")).setMultiChoiceItems(names, checked, (d,i,on) -> checked[i] = on)
+            .setPositiveButton("OK", (d,w) -> { for (int i = 0; i < checked.length; i++) profile.els.get(i).hidden = !checked[i]; CtlProfile.save(a, profile); ch.run(); })
+            .setNeutralButton(L.t("Все"), (d,w) -> { for (CtlProfile.El e : profile.els) e.hidden = false; CtlProfile.save(a, profile); ch.run(); })
+            .setNegativeButton(L.t("Отмена"), null).show();
+    }
+    private static void pickButtonsLegacy(Activity a, final SharedPreferences p, final Runnable ch) {
         final HashSet<String> hid = hidden(p);
         final String[] ids, names;   /* ids as stored in "hidden"; the "skyrim" layout has its own ("s:A", ...) */
         if (sky(p)) {

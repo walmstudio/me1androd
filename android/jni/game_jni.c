@@ -97,6 +97,17 @@ static void me1_toast(const char* msg) {
     }
     if (attached) (*g_vm)->DetachCurrentThread(g_vm);
 }
+/* v1.2.2: ExitProcess (hle_win32.c) - the same goodbye as a return from main, without exit()'s destructors */
+static void me1_on_exit(int code) {
+    fprintf(stderr, "[exe] game exited (%d, ExitProcess)\n", code); fflush(stdout); fflush(stderr);
+    JNIEnv* e = NULL;
+    if (g_vm && (*g_vm)->AttachCurrentThread(g_vm, &e, NULL) == 0 && e && g_act) {
+        jmethodID m = (*e)->GetStaticMethodID(e, g_act, "onGameExit", "(I)V");
+        if (m) (*e)->CallStaticVoidMethod(e, g_act, m, (jint)code);
+        (*g_vm)->DetachCurrentThread(g_vm);
+    }
+    usleep(500000);
+}
 static void* game_main(void* p) {
     (void)p;
     int r = me1_exe_main(g_argc, g_argv);
@@ -142,6 +153,7 @@ JNIEXPORT jint JNICALL FN(nativeStart)(JNIEnv* e, jclass cl, jobjectArray jargs,
     g_argc = na + 1;
     hle_toast_hook = me1_toast;   /* v0.10.2: DEVICE_LOST and other one-time events -> GameActivity Toast */
     hle_restart_hook = me1_request_restart;   /* v0.10.10: serial driver deaths -> game process restart */
+    hle_exit_hook = me1_on_exit;   /* v1.2.2: ExitProcess without exit() (destroyed driver mutexes -> abort) */
     time_t t = time(NULL); fprintf(stderr, "[exe] libme1game.so in the activity process (pid %d), %s", (int)getpid(), ctime(&t));
     crash_handlers();
     pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 16u << 20);
