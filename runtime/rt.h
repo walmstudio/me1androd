@@ -179,6 +179,12 @@ static inline void fcom_sw(CPU* c, double a, double b) {
         if (a_ != a_ || b_ != b_) { zf = pf = cf = 1; } else { zf = (a_ == b_); cf = (a_ < b_); pf = 0; } } while (0)
 static inline uint32_t fnstsw_val(CPU* c) { return (c->fsw & ~0x3800u) | ((c->ftop & 7) << 11); }
 double  rt_frnd(CPU* c, double x);                 /* round per FCW.RC */
+void rt_fsin(CPU* c);
+void rt_fcos(CPU* c);
+void rt_fptan(CPU* c);
+void rt_f2xm1(CPU* c);
+void rt_fyl2x(CPU* c);
+void rt_fyl2xp1(CPU* c);
 int16_t rt_fist16(CPU* c, double x, int trunc);
 int32_t rt_fist32(CPU* c, double x, int trunc);
 int64_t rt_fist64(CPU* c, double x, int trunc);
@@ -257,5 +263,6 @@ Module* rt_module_by_name(const char* dll);
 extern int (*rt_import_prefer_hle)(const Module* importer, const char* dll, const char* name);
 uint32_t rt_call(CPU* c, uint32_t va, int nargs, const uint32_t* args);
 uint32_t rt_find_export(Module* m, const char* name);
+void cpu_prof_register(const char* name);
 extern CPU g_cpu;
 static inline CPU* rt_cur(void) { return rt_tcpu ? rt_tcpu : &g_cpu; }   /* CPU of the calling thread */

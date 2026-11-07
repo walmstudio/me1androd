@@ -7,6 +7,8 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <math.h>
+#include <unistd.h>
 
 static const char* const FILE_NAME[SF_COUNT] = { "Engine", "Game", "Input", "Port" };
 
@@ -28,6 +30,8 @@ static const SetChoice LANG[] = { {"RU", "Русский"}, {"INT", "Англи�
 static const SetChoice DIFF[] = { {"0", "Лёгкий"}, {"1", "Нормальный"}, {"2", "Ветеран"}, {"3", "Хардкор"}, {"4", "Безумие"}, {0, 0} };
 static const SetChoice SCRPCT[] = { {"100", "100% (без масштабирования)"}, {"85", "85%"}, {"75", "75%"}, {"65", "65%"}, {"50", "50%"}, {0, 0} };
 static const SetChoice FPSCAP[] = { {"30", "30 кадров/с"}, {"45", "45 кадров/с"}, {"60", "60 кадров/с"}, {"0", "Без ограничения"}, {0, 0} };
+/* "Fit" — сохранить пропорции (черные полосы), "Stretch" — растянуть на весь экран, "Fill" — обрезать края, заполнить экран */
+static const SetChoice STRETCH[] = { {"fit", "По размеру (с пропорциями)"}, {"stretch", "Растянуть на весь экран"}, {"fill", "Заполнить экран (обрезать края)"}, {0, 0} };
 /* v1.2.1 GEARMASS (runtime/gearmass.c): load governor of the port -> ME1_GEARMASS / ME1_GM_* (exported by the launchers) */
 static const SetChoice GMMODE[] = { {"auto", "Авто — по замерам (рекомендуется)"}, {"eco", "Эконом — меньше нагрев и расход батареи"},
     {"balance", "Баланс"}, {"perf", "Производительность"}, {"max", "Максимум"}, {"custom", "Своя — параметры ниже"},
@@ -118,6 +122,8 @@ const SettingDef me1_settings[] = {
         "«Эконом» — меньше потоков и ожидания сном, 30 кадров/с; «Максимум» — все свободные ядра, кадр вперёд для GPU, быстрые ядра. "
         "«Своя» — параметры ниже. ME1_GEARMASS",
         SF_PORT, "Port", "Gearmass", 0, 0, ST_ENUM, "auto", 0, 0, GMMODE},
+    {"port.gm_autores", "Нагрузка (GEARMASS)", "Авторазрешение между сеансами", "По желанию: после достаточно долгого сеанса с упором в GPU может изменить разрешение перед следующим запуском. Изменение сохраняется в настройках; выключено по умолчанию. При ручном изменении новая величина становится верхним пределом.",
+        SF_PORT, "Port", "GearmassAutoResolution", 0, 0, ST_BOOL01, "0", 0, 0, 0},
     {"port.gm_hud", "Нагрузка (GEARMASS)", "Индикатор GEARMASS", "Строка под счётчиком FPS: режим, что тормозит (CPU/GPU/ожидание), "
         "занятые ядра, загрузка GPU, нагрев. ME1_GM_HUD",
         SF_PORT, "Port", "GearmassHud", 0, 0, ST_BOOL01, "0", 0, 0, 0},
@@ -138,6 +144,10 @@ const SettingDef me1_settings[] = {
     {"port.gm_aniso", "Нагрузка (GEARMASS)", "Своя: анизотропия, мин.", "Минимальная анизотропия текстур. "
         "В «Производительности» и «Максимуме» её поднимает сам GEARMASS, пока GPU свободен. ME1_GM_ANISO",
         SF_PORT, "Port", "GearmassAniso", 0, 0, ST_ENUM, "1", 0, 0, GMANISO},
+    {"port.stretch_mode", "Экран", "Растянуть на весь экран", "Как подгонять картинку под экран устройства: "
+        "«По размеру» — сохранить пропорции (чёрные полосы), «Растянуть» — заполнить экран без полос, "
+        "«Заполнить» — обрезать края, заполнив весь экран. ME1_STRETCH_MODE",
+        SF_PORT, "Port", "StretchMode", 0, 0, ST_ENUM, "fit", 0, 0, STRETCH},
 };
 const int me1_nsettings = sizeof me1_settings / sizeof me1_settings[0];
 
@@ -262,6 +272,15 @@ int me1cfg_load(ME1Config* c, const char* game, const char* docs) {
     }
     for (int f = 0; f < SF_COUNT; f++) { ini_free(&user[f]); ini_free(&def[f]); }
     ini_free(&ov);
+    return 0;
+}
+int me1cfg_refresh_clean(ME1Config* c) {
+    if (!c) return -1;
+    ME1Config fresh; if (me1cfg_load(&fresh, c->game_dir, c->docs_dir)) return -1;
+    for (int i = 0; i < me1_nsettings; i++) if (!c->dirty[i] && strcmp(c->source[i], "reset")) {
+        memcpy(c->value[i], fresh.value[i], sizeof c->value[i]);
+        memcpy(c->source[i], fresh.source[i], sizeof c->source[i]);
+    }
     return 0;
 }
 int me1cfg_set(ME1Config* c, const char* id, const char* value, char* err, size_t errcap) {
@@ -423,6 +442,65 @@ int me1cfg_save(ME1Config* c, char* msg, size_t cap) {
     for (int i = 0; i < me1_nsettings; i++) { c->dirty[i] = 0; if (!strcmp(c->source[i], "reset")) strcpy(c->source[i], "default"); }
     return 0;
 }
+/* v1.2.3: conservative, opt-in next-session adaptation. It changes the user's resolution on disk,
+ * never on a live swapchain. A sample must describe the actual current resolution, fps cap, auto mode,
+ * a stable FPS limit throughout the session, and at least 180 s of active gameplay (60+ draws/frame). One immutable run id is consumed at most once. A manually selected
+ * resolution becomes the new ceiling. The marker is atomically written BEFORE modifying config: a crash
+ * can lose one adjustment but cannot repeatedly downscale the same sample. */
+typedef struct { char run[80], mode[24], resolution[32]; double play, fps, gpu, capped, heat, heat_known; int limit, fields; } GmResSample;
+static int gmres_number(const char* s, double* v) { char* end; errno = 0; double d = strtod(s, &end); if (end == s || (*end && *end != '\n' && *end != '\r') || errno || !isfinite(d)) return 0; *v=d; return 1; }
+static int gmres_dims(const char* s, int* w, int* h) { char tail; return sscanf(s, "%dx%d%c", w, h, &tail)==2 && *w>=320 && *w<=7680 && *h>=200 && *h<=4320; }
+static int gmres_read(const char* docs, GmResSample* q) {
+    char path[1024], line[256]; snprintf(path,sizeof path,"%s/me1_gearmass_last.txt",docs);
+    FILE* f=fopen(path,"r"); if(!f) return 0; memset(q,0,sizeof *q); q->heat=-1; q->heat_known=-1;
+    int mixed_seen=0, mixed_valid=1;
+    while(fgets(line,sizeof line,f)) { char* eq=strchr(line,'='); if(!eq) continue; *eq++=0; eq[strcspn(eq,"\r\n")]=0; double x;
+        if(!strcmp(line,"run_id")) { if(strlen(eq)<sizeof q->run && strspn(eq,"0123456789abcdef-")==strlen(eq) && *eq) { strcpy(q->run,eq); q->fields|=1; } }
+        else if(!strcmp(line,"mode")) { snprintf(q->mode,sizeof q->mode,"%s",eq); q->fields|=2; }
+        else if(!strcmp(line,"resolution")) { snprintf(q->resolution,sizeof q->resolution,"%s",eq); q->fields|=4; }
+        else if(!strcmp(line,"active_seconds") && gmres_number(eq,&x)) { q->play=x; q->fields|=8; }
+        else if(!strcmp(line,"active_fps") && gmres_number(eq,&x)) { q->fps=x; q->fields|=16; }
+        else if(!strcmp(line,"fps_limit") && gmres_number(eq,&x) && x>=0 && x<=240) { q->limit=(int)x; q->fields|=32; }
+        else if(!strcmp(line,"active_gpu") && gmres_number(eq,&x)) { q->gpu=x; q->fields|=64; }
+        else if(!strcmp(line,"active_capped") && gmres_number(eq,&x)) { q->capped=x; q->fields|=128; }
+        else if(!strcmp(line,"heat_max") && gmres_number(eq,&x)) q->heat=x;
+        else if(!strcmp(line,"active_heat_known") && gmres_number(eq,&x) && x>=0 && x<=100) q->heat_known=x;
+        else if(!strcmp(line,"fps_limit_mixed")) { mixed_seen++; if(strcmp(eq,"0")) mixed_valid=0; }
+    }
+    int read_ok = !ferror(f); if(fclose(f)) read_ok=0;
+    return read_ok && mixed_seen==1 && mixed_valid && q->fields==255 && q->play>=180 && q->play<=1e8 && q->fps>=0 && q->fps<=1000 && q->gpu>=0 && q->gpu<=100 && q->capped>=0 && q->capped<=100 && q->limit>=10;
+}
+int me1cfg_adapt_resolution(ME1Config* c, char* msg, size_t cap) {
+    if(cap) msg[0]=0;
+    int io,im,ir,ifps; if(!c || !me1cfg_find("port.gm_autores",&io) || !me1cfg_find("port.gearmass",&im) || !me1cfg_find("screen.resolution",&ir) || !me1cfg_find("port.fps_limit",&ifps)) return 0;
+    const char* skip=getenv("ME1_GM_RES_SKIP"), *mode=getenv("ME1_GEARMASS"), *fl=getenv("ME1_FPS_LIMIT");
+    if((skip && !strcmp(skip,"1")) || strcmp(c->value[io],"1") || (strcasecmp(mode && *mode ? mode : c->value[im],"auto") && strcmp(mode && *mode ? mode : c->value[im],"1"))) return 0;
+    int limit=fl && *fl ? atoi(fl) : atoi(c->value[ifps]); GmResSample q;
+    if(!gmres_read(c->docs_dir,&q) || strcmp(q.mode,"AUTO") || strcmp(q.resolution,c->value[ir]) || q.limit!=limit) return 0;
+    int w,h; if(!gmres_dims(c->value[ir],&w,&h)) return 0;
+    char state[1024], tmp[1100], consumed[80]="", last[32]="", ceiling[32]=""; int up_streak=0;
+    snprintf(state,sizeof state,"%s/me1_gearmass_resolution.state",c->docs_dir); FILE* in=fopen(state,"r");
+    if(in) { char line[256]; while(fgets(line,sizeof line,in)) { char* eq=strchr(line,'='); if(!eq) continue; *eq++=0; eq[strcspn(eq,"\r\n")]=0;
+        if(!strcmp(line,"run")) snprintf(consumed,sizeof consumed,"%s",eq); else if(!strcmp(line,"last")) snprintf(last,sizeof last,"%s",eq); else if(!strcmp(line,"ceiling")) snprintf(ceiling,sizeof ceiling,"%s",eq); else if(!strcmp(line,"up_streak")) up_streak=atoi(eq)==1 ? 1 : 0; } fclose(in); }
+    if(!strcmp(consumed,q.run)) return 0;
+    int cw,ch; if(strcmp(last,c->value[ir]) || !gmres_dims(ceiling,&cw,&ch)) { cw=w; ch=h; up_streak=0; snprintf(ceiling,sizeof ceiling,"%dx%d",cw,ch); }
+    int nw=w,nh=h; const char* reason="hold";
+    if(q.gpu>=40 && q.fps < limit*0.85) { up_streak=0; nw=(w*7/8)&~1; nh=(h*7/8)&~1; if(nw<640 || nh<360) { nw=w; nh=h; } else reason="GPU-bound"; }
+    else if(q.capped>=80 && q.fps>=limit*0.97 && q.heat>=0 && q.heat<80 && q.heat_known>=95 && (w<cw || h<ch)) {
+        if (++up_streak >= 2) { nw=((w*8+6)/7)&~1; nh=((h*8+6)/7)&~1; if(nw>=cw-2 || nh>=ch-2) { nw=cw; nh=ch; } reason="headroom"; up_streak=0; }
+        else reason="confirm headroom next session";
+    } else up_streak=0;
+    char next[32]; snprintf(next,sizeof next,"%dx%d",nw,nh);
+    snprintf(tmp,sizeof tmp,"%s.tmp.%ld",state,(long)getpid()); FILE* out=fopen(tmp,"w"); if(!out) { if(cap) snprintf(msg,cap,"cannot write adaptation state"); return -1; }
+    int ok=fprintf(out,"run=%s\nlast=%s\nceiling=%s\nup_streak=%d\n",q.run,next,ceiling,up_streak)>0; if(fclose(out)) ok=0;
+    if(!ok || rename(tmp,state)) { remove(tmp); if(cap) snprintf(msg,cap,"cannot commit adaptation state"); return -1; }
+    if(nw==w && nh==h) { if(cap) snprintf(msg,cap,"resolution unchanged (%s)",reason); return 0; }
+    char err[256]; if(me1cfg_set(c,"screen.resolution",next,err,sizeof err)) { if(cap) snprintf(msg,cap,"%s",err); return -1; }
+    char saved[4096]; if(me1cfg_save(c,saved,sizeof saved)) { if(cap) snprintf(msg,cap,"%s",saved); return -1; }
+    if(cap) snprintf(msg,cap,"resolution %dx%d -> %s (%s; %.1f/%d FPS)",w,h,next,reason,q.fps,limit);
+    return 1;
+}
+
 char* me1cfg_dump(const ME1Config* c) {
     size_t cap = 256 * (me1_nsettings + 1), k = 0; char* o = malloc(cap);
     for (int i = 0; i < me1_nsettings; i++) k += snprintf(o + k, cap - k, "%s=%s\t%s\n", me1_settings[i].id, c->value[i], c->source[i]);

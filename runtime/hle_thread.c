@@ -114,8 +114,22 @@ static void cpu_list(const cpu_set_t* s, int n, char* o, size_t cap) {
         i = j;
     }
 }
+static int g_cpu_avail;   /* v1.2.2: CPUs of the process mask BEFORE any placement (GEARMASS topology, hle_cpu_avail) */
+static void cpu_avail_init(void) {
+    if (g_cpu_avail) return;
+    /* On Android, gm_init() may run on an already-pinned thread whose affinity mask only covers the fast cores.
+       Prefer the system's online CPU count over the (possibly restricted) thread mask. */
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    if (n > 0) g_cpu_avail = (int)n;
+    else {
+        cpu_set_t c0; CPU_ZERO(&c0);
+        if (sched_getaffinity(0, sizeof c0, &c0) == 0 && CPU_COUNT(&c0) > 0) g_cpu_avail = CPU_COUNT(&c0);
+        else g_cpu_avail = 1;
+    }
+}
 static int cpu_pin_init(void) {
     if (g_cpu_pin >= 0) return g_cpu_pin;
+    cpu_avail_init();   /* first: the calling thread is not pinned yet */
     g_cpu_pin = 0;
     const char* e = getenv("ME1_CPU_PIN"); if (e && *e == '0') { fprintf(stderr, "[hle] CPU placement off (ME1_CPU_PIN=0)\n"); return 0; }
     long n = sysconf(_SC_NPROCESSORS_CONF); if (n < 2 || n > CPU_SETSIZE) return 0;
@@ -197,6 +211,15 @@ static const cpu_set_t* heavy_mask(int heavy) {
     return heavy == 2 ? &g_cpu_prime : &g_cpu_bignp;
 }
 #endif
+/* v1.2.2: the number of CPUs the process may use, read before hle_cpu_place pinned any thread (0 = not known yet).
+ * gm_init runs on an already pinned thread: its own mask (2 fast cores) said nothing about the machine. */
+int hle_cpu_avail(void) {
+#ifdef __linux__
+    return g_cpu_avail;
+#else
+    return 0;
+#endif
+}
 void hle_cpu_place(int heavy) {
     static __thread int placed = -1;
     if (placed == heavy) return;

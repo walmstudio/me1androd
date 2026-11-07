@@ -83,6 +83,7 @@ extern const HleDef hle_d3d9_defs[]; extern const unsigned hle_d3d9_ndefs;
 /* optional one-line UI notification (Toast), set by android/jni/game_jni.c; NULL elsewhere (v0.10.2: VK_ERROR_DEVICE_LOST) */
 extern void (*hle_toast_hook)(const char* msg);
 extern void (*hle_restart_hook)(void);   /* v0.10.10: serial DEVICE_LOST - restart the game process (set by game_jni.c) */
+extern void (*hle_exit_hook)(int code);   /* v1.2.2: ExitProcess - the platform says goodbye before _exit (set by game_jni.c) */
 void hle_d3d9_report(void);
 unsigned hle_d3d9_frames(void);                 /* Present count (input pacing) */
 void hle_d3dx_attach(uint32_t compile, uint32_t assemble, uint32_t preprocess, uint32_t disassemble);   /* recompiled d3dx9_31.dll */

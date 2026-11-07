@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #include "rt.h"
 #include "hle.h"
+#include "cpu_profile.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
@@ -33,6 +34,34 @@ void rt_init(void) {
     g_cpu.fs_base = TEB_VA;
     rt_fninit(&g_cpu); g_cpu.fcw = 0x27F;      /* MSVC CRT default: 53-bit precision, round to nearest */
     g_cpu.mxcsr = 0x1F80;
+    /* Initialize CPU profiling for Stage 8 optimization */
+    cpu_prof_init();
+    for (int i = 0; i < CPU_PROF_COUNT; i++) {
+        const char* name = NULL;
+        switch (i) {
+            case CPU_PROF_FSIN: name = "rt_fsin"; break;
+            case CPU_PROF_FCOS: name = "rt_fcos"; break;
+            case CPU_PROF_FSINCOS: name = "rt_fsincos"; break;
+            case CPU_PROF_FPTAN: name = "rt_fptan"; break;
+            case CPU_PROF_FPATAN: name = "rt_fpatan"; break;
+            case CPU_PROF_F2XM1: name = "rt_f2xm1"; break;
+            case CPU_PROF_FYL2X: name = "rt_fyl2x"; break;
+            case CPU_PROF_FYL2XP1: name = "rt_fyl2xp1"; break;
+            case CPU_PROF_FRNDINT: name = "rt_fist"; break;
+            case CPU_PROF_FSCALE: name = "rt_fscale"; break;
+            case CPU_PROF_FXTRACT: name = "rt_fxtract"; break;
+            case CPU_PROF_FPREM: name = "rt_fprem"; break;
+            case CPU_PROF_FPREM1: name = "rt_fprem1"; break;
+            case CPU_PROF_FXAM: name = "rt_fxam"; break;
+            case CPU_PROF_FSQRT: name = "rt_fsqrt"; break;
+            case CPU_PROF_FCHS: name = "rt_fchs"; break;
+            case CPU_PROF_FABS: name = "rt_fabs"; break;
+            case CPU_PROF_FIST16: name = "rt_fist16"; break;
+            case CPU_PROF_FIST32: name = "rt_fist32"; break;
+            case CPU_PROF_FIST64: name = "rt_fist64"; break;
+        }
+        if (name) cpu_prof_register(name);
+    }
     wr32(TEB_VA + 0x00, 0xFFFFFFFFu);          /* SEH chain end */
     wr32(TEB_VA + 0x04, STACK_TOP);            /* stack base */
     wr32(TEB_VA + 0x08, STACK_TOP - STACK_SIZE);

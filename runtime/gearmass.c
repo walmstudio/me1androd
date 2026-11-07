@@ -41,14 +41,17 @@ void hle_cpu_replace(int prime);
 void hle_cpu_uclamp(int v);
 void hle_cpu_place(int heavy);
 uint64_t hle_fs_read_bytes(void);
+int hle_cpu_avail(void);
+int hle_fs_video_open(void);
+const char* hle_fs_docs(void);
 
 volatile GmKnobs gm_k = { GM_BALANCE, 1, 0, 0, 0, 0, 0, 0, 1, 0 };   /* "off" values until gm_init */
 
 static double gm_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (double)t.tv_sec + t.tv_nsec * 1e-9; }
 static const char* const MODE_NAMES[] = { "ECO", "BALANCE", "PERF", "MAX", "CUSTOM", "AUTO", "OFF" };
 const char* gm_mode_name(int m) { return m >= 0 && m <= GM_OFF ? MODE_NAMES[m] : "?"; }
-static const char* const CLASS_NAMES[] = { "idle", "loading", "capped", "gpu-bound", "cpu-bound", "wait-bound" };
-const char* gm_class_name(int c) { return c >= 0 && c <= GMC_WAIT ? CLASS_NAMES[c] : "?"; }
+static const char* const CLASS_NAMES[] = { "idle", "loading", "capped", "gpu-bound", "cpu-bound", "wait-bound", "video" };
+const char* gm_class_name(int c) { return c >= 0 && c <= GMC_VIDEO ? CLASS_NAMES[c] : "?"; }
 static const char* const HEAVY_NAMES[] = { "main", "render", "d3d" };
 static int ci_has(const char* h, const char* n) {   /* case-insensitive substring (no strcasestr: portability) */
     size_t ln = strlen(n);
@@ -66,6 +69,7 @@ void gm_preset(int level, int pool_max, GmKnobs* k) {
     k->adpf_ms10 = ADPF[level]; k->uclamp = UCL[level]; k->fps_limit = FPS[level]; k->quality = QUAL[level];
     k->workers = level == GM_ECO ? 0 : level == GM_BALANCE ? (pool_max < 2 ? pool_max : 2) : pool_max;
     k->aniso = 1;
+    k->lod_bias = 0;
 }
 int gm_classify(const GmSample* s, int* which) {
     int w = -1; double hu = -1;
@@ -73,6 +77,7 @@ int gm_classify(const GmSample* s, int* which) {
     if (which) *which = w;
     if (s->frames <= 0) return s->fs_mbps >= 4 ? GMC_LOADING : GMC_IDLE;   /* no Present: start-up, a loading hitch */
     if (s->fs_mbps >= 16 || s->fps < 3) return GMC_LOADING;
+    if (s->video > 0 && s->draws <= 24) return GMC_VIDEO;   /* v1.2.2: a Bink movie (CPU decoding, a quad or two per frame) */
     if (s->fps_limit > 0 && s->fps >= 0.95 * s->fps_limit) return GMC_CAPPED;
     if (hu >= 0.90) return GMC_CPU;
     if (s->gpu_busy >= 0.85) return GMC_GPU;
@@ -81,33 +86,76 @@ int gm_classify(const GmSample* s, int* which) {
 }
 void gm_policy_init(GmPolicy* p, int start_level, int quality) {
     memset(p, 0, sizeof *p);
-    p->level = start_level; p->cap = GM_MAX; p->cand = -1; p->ahead = -1; p->ahead_cand = -1; p->aniso = 1; p->quality = quality;
+    p->level = start_level; p->cap = GM_MAX; p->cand = -1; p->ahead = -1; p->ahead_cand = -1; p->aniso = 1; p->quality = quality; p->lod_bias = 0;
     p->t_change = p->t_cool = p->t_q = -1e9; p->t_hot = -1e9;
+    p->t_cand = p->t_down = p->floor_until = -1e9; p->down_from = -1; p->floor = GM_ECO;
+}
+#define GM_DOWN_S 6.0      /* v1.2.2: a step down needs its reason for this long (a step up: 2 windows) */
+#define GM_FAIL_S 30.0     /* back up within this time after a step down "because capped": that level failed */
+#define GM_HOLD0 60.0      /* ... and is not tried again for 60 s, doubling with each failure up to GM_HOLDMAX */
+#define GM_HOLDMAX 600.0
+/* A partial set can still report heat and cause throttling, but its coolest
+ * readings cannot prove that the missing sensors have cooled down. */
+static int gm_heat_sample_complete(const GmSample* s) {
+    return s->headroom >= 0 && s->thermal_status != GM_THERMAL_PARTIAL;
 }
 void gm_policy_step(GmPolicy* p, const GmSample* s, int cls, double now, double thr) {
     /* 1. thermal: a cap on the level, stepped down before the system throttles, raised after 30 s of headroom */
     int st = s->thermal_status;
-    if (st >= 2 || s->headroom >= thr - 0.1) p->t_hot = now;
+    int thermal_known = gm_heat_sample_complete(s) || st >= 0;
+    /* Missing telemetry is not evidence of cooling. Hold an existing thermal cap
+     * until 30 seconds of valid cool samples have been observed again. */
+    if (st >= 2 || s->headroom >= thr - 0.1 || (!thermal_known && p->cap < GM_MAX)) p->t_hot = now;
     if (st >= 4) { if (p->cap != GM_ECO) { p->cap = GM_ECO; p->t_cool = now; } }   /* critical: frame limit 30 */
     else if ((st == 3 || s->headroom >= 1.0) && p->cap > GM_BALANCE) { p->cap = GM_BALANCE; p->t_cool = now; }
     else if (s->headroom >= thr && p->cap > GM_BALANCE && now - p->t_cool >= 10) {
         int c = (p->cap > p->level ? p->level : p->cap) - 1; p->cap = c < GM_BALANCE ? GM_BALANCE : c; p->t_cool = now;
     }
     else if (p->cap < GM_MAX && now - p->t_hot >= 30 && now - p->t_cool >= 30) { p->cap++; p->t_cool = now; }
-    /* 2. the level the scene wants */
+    /* A loading/idle/video interruption, or a cap below the old level, makes
+     * a past FPS step-down incomparable: do not record it as an FPS failure. */
+    if (cls == GMC_LOADING || cls == GMC_IDLE || cls == GMC_VIDEO || (p->down_from >= 0 && p->cap < p->down_from)) p->down_from = -1;
+    /* 2. the level the scene wants. v1.2.2: the frame limit counts as met while the smoothed fps holds it (one slow
+     * window is a hitch, not a heavier scene); a met limit steps down ONE level at a time; a lower level that could
+     * not hold the limit is remembered (floor) and not tried again for 60 s .. 10 min */
+    if (s->frames > 0) p->fps_ema = p->fps_ema > 0 ? 0.65 * p->fps_ema + 0.35 * s->fps : s->fps;
+    int lim = s->fps_limit;
+    int capped = cls == GMC_CAPPED || (lim > 0 && (cls == GMC_GPU || cls == GMC_CPU || cls == GMC_WAIT) && p->fps_ema >= 0.95 * lim && s->fps >= 0.80 * lim);
+    int floor = now < p->floor_until ? p->floor : GM_ECO;
     int want;
-    switch (cls) {
-    case GMC_LOADING: want = GM_MAX; break;           /* shorter loading screens */
-    case GMC_CAPPED: case GMC_IDLE: want = GM_BALANCE; break;   /* the frame limit is met / nothing to draw: clocks would only heat */
-    default: want = s->draws > 0 && s->draws < 60 ? GM_BALANCE : GM_MAX;   /* menus, videos: light */
+    if (capped) {   /* the frame limit is met: clocks would only heat */
+        want = p->level - 1;
+        if (want < GM_BALANCE) want = GM_BALANCE;
+        if (want < floor) want = floor > p->level ? p->level : floor;
+    } else switch (cls) {
+    case GMC_LOADING: want = GM_MAX; break;      /* shorter loading screens */
+    case GMC_IDLE: want = GM_BALANCE; break;     /* nothing to draw */
+    case GMC_VIDEO: want = s->fps >= (lim > 0 && lim < 30 ? 0.95 * lim : 28.5) ? GM_BALANCE : GM_MAX; break;   /* Bink decodes on the CPU */
+    case GMC_GPU: want = s->draws > 0 && s->draws < 60 ? GM_BALANCE : GM_PERF; break;   /* CPU clocks do not help the GPU; ahead does (4.) */
+    default: want = s->draws > 0 && s->draws < 60 ? GM_BALANCE : GM_MAX;   /* menus: light */
     }
     if (want > p->cap) want = p->cap;
-    /* 3. hysteresis: 2 windows in a row and >= 3 s since the last change; a thermal cap applies at once */
+    /* 3. hysteresis: 2 windows in a row and >= 3 s since the last change, a step down also GM_DOWN_S of its reason;
+     * a thermal cap applies at once */
     if (want != p->level) {
-        if (want == p->cand) p->cand_n++; else { p->cand = want; p->cand_n = 1; }
-        int urgent = p->level > p->cap;
-        if (urgent || (p->cand_n >= 2 && now - p->t_change >= 3.0)) { p->level = want; p->t_change = now; p->cand_n = 0; p->cand = -1; }
+        if (want != p->cand) { p->cand = want; p->cand_n = 0; p->t_cand = now; }
+        p->cand_n++;
+        int urgent = p->level > p->cap, up = want > p->level;
+        if (urgent || (p->cand_n >= 2 && now - p->t_change >= 3.0 && (up || now - p->t_cand >= GM_DOWN_S))) {
+            if (!urgent && !up && capped) { p->down_from = p->level; p->t_down = now; }
+            else if (!urgent && up && cls != GMC_LOADING && cls != GMC_IDLE && cls != GMC_VIDEO && p->down_from > p->level && now - p->t_down < GM_FAIL_S) {
+                p->hold = p->hold > 0 ? (p->hold * 2 > GM_HOLDMAX ? GM_HOLDMAX : p->hold * 2) : GM_HOLD0;   /* the lower level failed */
+                p->floor = p->down_from; p->floor_until = now + p->hold; p->fails++; p->down_from = -1;
+                if (want < p->floor) want = p->floor;
+            }
+            if (want > p->cap) want = p->cap;  /* thermal cap always wins over the failure floor */
+            p->level = want; p->t_change = now; p->cand_n = 0; p->cand = -1;
+        }
     } else { p->cand_n = 0; p->cand = -1; }
+    if (p->down_from >= 0 && now - p->t_down >= GM_FAIL_S) {   /* the step down held */
+        if (p->level < p->floor || now >= p->floor_until) p->hold = p->hold >= 2 * GM_HOLD0 ? p->hold / 2 : 0;
+        p->down_from = -1;
+    }
     /* 4. how far the replay may run behind: GPU-bound -> 2 frames, waits in the chain -> one more than the preset */
     static const int AHEAD[4] = { 0, 1, 1, 2 };
     int base = AHEAD[p->level], aw = cls == GMC_GPU ? 2 : cls == GMC_WAIT ? base + 1 : base;
@@ -120,9 +168,14 @@ void gm_policy_step(GmPolicy* p, const GmSample* s, int cls, double now, double 
     /* 5. quality governor (every 2 s): the GPU's idle time goes into anisotropic filtering, back down above 90 % */
     if (now - p->t_q >= 2.0) {
         p->t_q = now;
-        int hot = s->headroom >= thr - 0.05 || s->thermal_status >= 2;
+        int hot = s->headroom >= thr - 0.05 || s->thermal_status >= 2 || s->thermal_status == GM_THERMAL_PARTIAL || (!thermal_known && p->cap < GM_MAX);
         if (!p->quality || p->level < GM_PERF || hot || (s->gpu_busy >= 0 && s->gpu_busy > 0.90)) { if (p->aniso > 1) p->aniso /= 2; }
         else if (s->gpu_busy >= 0 && s->gpu_busy < 0.60 && cls != GMC_LOADING && cls != GMC_IDLE && p->aniso < 16) p->aniso *= 2;
+    }
+    /* v1.2.18: adaptive mesh LOD bias when GPU is saturated */
+    if (s->gpu_busy >= 0) {
+        if (s->gpu_busy > 0.90 && p->lod_bias < 3) p->lod_bias++;
+        else if (s->gpu_busy < 0.60 && p->lod_bias > 0) p->lod_bias--;
     }
 }
 
@@ -132,14 +185,26 @@ static struct {
     double thr;
     GmKnobs pin; int pinned[10];   /* indices: K_* */
     /* counters fed by the renderer / present */
-    uint64_t frames, draws, gpu_ns, gpu_frames, slept_ns; int limit;
+    uint64_t frames, draws, gpu_ns, gpu_frames, slept_ns, limit_first; int limit, limit_mixed;
     /* the last sample (monitor) */
     GmSample s; int cls, which; double cpu_cores, gpu_ms, freq_ghz[3], freq_pct[3]; int cpu_of[3];
     char hud_s[160]; pthread_mutex_t hmx;
     /* thermal */
     int th_src; double th_temp, th_trip; char th_name[48];
-} G = { .hmx = PTHREAD_MUTEX_INITIALIZER };
-enum { K_AHEAD, K_WORKERS, K_SPIN, K_PRIME, K_ADPF, K_UCLAMP, K_FPS, K_ANISO, K_QUALITY };
+    /* v1.2.2: session statistics (me1_gearmass_last.txt) - seconds per level (while frames are drawn) and per class */
+    double st_level[4], st_class[GMC_VIDEO + 1], st_play, st_fps, st_heat, st_hot, st_partial, t_start, st_active, st_active_fps, st_active_gpu, st_active_cap, st_active_heat_known; char run_id[80]; uint64_t res_frame; int res_mixed; int st_fails, st_floor; double st_floor_s;
+    pthread_mutex_t smx;
+} G = { .hmx = PTHREAD_MUTEX_INITIALIZER, .smx = PTHREAD_MUTEX_INITIALIZER };
+enum { K_AHEAD, K_WORKERS, K_SPIN, K_PRIME, K_ADPF, K_UCLAMP, K_FPS, K_ANISO, K_QUALITY, K_LOD };
+/* Called for active gameplay samples while holding G.smx. */
+static void gm_record_active_heat(const GmSample* s, double dt) {
+    if (gm_heat_sample_complete(s)) G.st_active_heat_known += dt;
+}
+static void gm_record_thermal(const GmSample* s, double dt) {
+    if (s->thermal_status == GM_THERMAL_PARTIAL) G.st_partial += dt;
+    if (s->headroom > G.st_heat) G.st_heat = s->headroom;
+    if (s->thermal_status >= 2 || s->headroom >= 1.0) G.st_hot += dt;
+}
 int gm_mode(void) { return G.mode; }
 int gm_pool_max(void) { return G.pool_max; }
 
@@ -150,10 +215,18 @@ static long rd_long(const char* path) {
 }
 static void topology(void) {
     long n = sysconf(_SC_NPROCESSORS_CONF); if (n < 1) n = 1; if (n > 256) n = 256;
-    int avail = (int)n;
+    /* v1.2.2: the process mask as hle_thread saw it before pinning anything - gm_init runs on the main thread, which is
+     * already pinned to the fast cores (v1.2.1 read that mask: "2 cores" on an 8-core phone, no pool, ME1_D3D_CMD=0) */
+    int avail = hle_cpu_avail();
+    long on = sysconf(_SC_NPROCESSORS_ONLN);
+    if (avail <= 0) {
+        avail = on > 0 ? (int)on : (int)n;
 #ifdef __linux__
-    cpu_set_t cur; CPU_ZERO(&cur); if (sched_getaffinity(0, sizeof cur, &cur) == 0 && CPU_COUNT(&cur) > 0) avail = CPU_COUNT(&cur);
+        cpu_set_t cur; CPU_ZERO(&cur);   /* nothing pinned yet (tests, ME1_CPU_PIN=0): this thread's mask is the process's */
+        if (sched_getaffinity(0, sizeof cur, &cur) == 0 && CPU_COUNT(&cur) > 0 && CPU_COUNT(&cur) < avail) avail = CPU_COUNT(&cur);
 #endif
+    }
+    if (on > 0 && avail > on) avail = (int)on;
     G.ncpu = avail;
     long fmin = 0, fmax = 0; int nf = 0; long f[256];
     for (int i = 0; i < n; i++) {
@@ -192,6 +265,7 @@ static void pin_knobs(void) {
     if (env_int("ME1_FPS_LIMIT", "ME1_GM_FPS", 0, 240, &v)) { p->fps_limit = v <= 0 ? 0 : v < 10 ? 10 : v; G.pinned[K_FPS] = 1; }
     if (env_int("ME1_GM_ANISO", NULL, 1, 16, &v)) { p->aniso = v; G.pinned[K_ANISO] = 1; }
     if (env_int("ME1_GM_QUALITY", NULL, 0, 1, &v)) { p->quality = v; G.pinned[K_QUALITY] = 1; }
+    if (env_int("ME1_GM_LOD", NULL, 0, 3, &v)) { p->lod_bias = v; G.pinned[K_LOD] = 1; }
 }
 static void apply_pins(GmKnobs* k) {
     const GmKnobs* p = &G.pin;
@@ -204,6 +278,7 @@ static void apply_pins(GmKnobs* k) {
     if (G.pinned[K_FPS]) k->fps_limit = p->fps_limit;
     if (G.pinned[K_ANISO]) k->aniso = p->aniso;
     if (G.pinned[K_QUALITY]) k->quality = p->quality;
+    if (G.pinned[K_LOD]) k->lod_bias = p->lod_bias;
 }
 static int parse_mode(void) {
     const char* e = getenv("ME1_GEARMASS");
@@ -296,19 +371,68 @@ void gm_parallel_for(int n, gm_job_fn fn, void* ctx, int min_chunk) {
     __atomic_store_n(&P.busy, 0, __ATOMIC_RELEASE);
 }
 
+/* v1.2.2: what the session looked like, for the launchers' hint under "Нагрузка (GEARMASS)" (key=value lines;
+ * shares in percent of the play time / of the session; written every 30 s, so a killed game still leaves it) */
+void gm_session_save(void) {
+    const char* d = hle_fs_docs();
+    if (!d || !*d || !G.ncpu || (getenv("ME1_GM_RES_SKIP") && !strcmp(getenv("ME1_GM_RES_SKIP"), "1"))) return;
+    char path[1200], tmp[1210]; snprintf(path, sizeof path, "%s/me1_gearmass_last.txt", d); snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    pthread_mutex_lock(&G.smx);
+    double play = G.st_play > 0 ? G.st_play : 1, all = 0;
+    for (int i = 0; i <= GMC_VIDEO; i++) all += G.st_class[i];
+    if (all <= 0) all = 1;
+    int last_limit = __atomic_load_n(&G.limit, __ATOMIC_SEQ_CST);
+    uint64_t first_limit = __atomic_load_n(&G.limit_first, __ATOMIC_SEQ_CST);
+    int mixed_limit = __atomic_load_n(&G.limit_mixed, __ATOMIC_SEQ_CST) || !first_limit || first_limit != (uint64_t)(unsigned)last_limit + 1;
+    FILE* f = fopen(tmp, "w");
+    if (f) {
+        time_t now = time(NULL); struct tm tmv; char ds[32] = "";
+        if (localtime_r(&now, &tmv)) strftime(ds, sizeof ds, "%Y-%m-%d %H:%M", &tmv);
+        fprintf(f, "# GEARMASS, the last game session (runtime/gearmass.c; the launchers show it under \"GEARMASS\")\n");
+        fprintf(f, "date=%s\nmode=%s\ncores=%d\nfast=%d\nslow=%d\nseconds=%.0f\nplay_seconds=%.0f\n", ds, gm_mode_name(G.mode), G.ncpu, G.nfast, G.nslow,
+                gm_now() - G.t_start, G.st_play);
+        fprintf(f, "run_id=%s\nfps_limit_mixed=%d\n", G.run_id, mixed_limit ? 1 : 0);
+        { double a = G.st_active > 0 ? G.st_active : 1; fprintf(f, "active_seconds=%.0f\nactive_fps=%.1f\nactive_gpu=%.0f\nactive_capped=%.0f\nactive_heat_known=%.1f\n", G.st_active, G.st_active_fps/a, 100*G.st_active_gpu/a, 100*G.st_active_cap/a, floor(1000*G.st_active_heat_known/a)/10); }
+        { const char* r = getenv("ME1_GM_RENDER_RES"); unsigned w=0,h=0; char tail;
+          uint64_t observed=__atomic_load_n(&G.res_frame,__ATOMIC_RELAXED);
+          if (r && sscanf(r, "%ux%u%c", &w, &h, &tail)==2 && w>=320 && w<=16384 && h>=200 && h<=16384 && observed==(((uint64_t)w<<32)|h) && !__atomic_load_n(&G.res_mixed,__ATOMIC_RELAXED)) fprintf(f, "resolution=%ux%u\n", w, h); }
+        fprintf(f, "level_eco=%.0f\nlevel_balance=%.0f\nlevel_perf=%.0f\nlevel_max=%.0f\n", 100 * G.st_level[0] / play, 100 * G.st_level[1] / play,
+                100 * G.st_level[2] / play, 100 * G.st_level[3] / play);
+        static const char* const K[] = { "idle", "loading", "capped", "gpu", "cpu", "wait", "video" };
+        for (int i = 0; i <= GMC_VIDEO; i++) fprintf(f, "class_%s=%.0f\n", K[i], 100 * G.st_class[i] / all);
+        fprintf(f, "fps_avg=%.1f\nfps_limit=%d\nfails=%d\nheat_max=%.0f\nhot_seconds=%.0f\nworkers=%d\npool=%d\n", G.st_fps / play, last_limit, G.st_fails,
+                G.st_heat >= 0 ? G.st_heat * 100 : -1.0, G.st_hot, gm_k.workers, G.pool_max);
+        fprintf(f, "thermal_partial_seconds=%.1f\n", G.st_partial);
+        if (G.st_floor >= 0 && G.st_floor <= GM_MAX) fprintf(f, "floor=%s\n", gm_mode_name(G.st_floor));
+        int ok = !ferror(f); if (fclose(f)) ok = 0;
+        if (!ok || rename(tmp, path)) remove(tmp);
+    }
+    pthread_mutex_unlock(&G.smx);
+}
 void gm_report(void) {
     if (!G.mode && !G.ncpu) return;
+    if (G.started) gm_session_save();
     fprintf(stderr, "[gearmass] report: %s, worker pool %d of %d started, %llu jobs (%llu parallel: %llu items, %llu serial items)\n",
             gm_mode_name(G.mode), P.started, G.pool_max, (unsigned long long)P.jobs, (unsigned long long)P.jobs_par,
             (unsigned long long)P.items_par, (unsigned long long)P.items_ser);
 }
 
 /* ================= counters from the renderer ================= */
+void gm_frame_size(unsigned w, unsigned h) {
+    if (!w || !h) return;
+    uint64_t v=((uint64_t)w<<32)|h, zero=0;
+    __atomic_compare_exchange_n(&G.res_frame,&zero,v,0,__ATOMIC_RELAXED,__ATOMIC_RELAXED);
+    if (zero && zero != v) __atomic_store_n(&G.res_mixed,1,__ATOMIC_RELAXED);
+}
 void gm_frame(uint64_t draws_total, double slept_s, int fps_limit) {
-    __atomic_add_fetch(&G.frames, 1, __ATOMIC_RELAXED);
+    /* +1 reserves zero for "no frame yet", including the uncapped limit 0. */
+    uint64_t v = (uint64_t)(unsigned)fps_limit + 1, first = 0;
+    __atomic_compare_exchange_n(&G.limit_first, &first, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    if (first && first != v) __atomic_store_n(&G.limit_mixed, 1, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&G.limit, fps_limit, __ATOMIC_SEQ_CST);
     __atomic_store_n(&G.draws, draws_total, __ATOMIC_RELAXED);
     if (slept_s > 0) __atomic_add_fetch(&G.slept_ns, (uint64_t)(slept_s * 1e9), __ATOMIC_RELAXED);
-    G.limit = fps_limit;
+    __atomic_add_fetch(&G.frames, 1, __ATOMIC_RELAXED);
 }
 void gm_gpu_ns(uint64_t ns, int eof) {
     __atomic_add_fetch(&G.gpu_ns, ns, __ATOMIC_RELAXED);
@@ -386,23 +510,26 @@ static void thermal_init(void) {
 static void thermal_read(int tick, double* headroom, int* status) {
 #if defined(__ANDROID__)
     if (G.th_src == 1 || G.th_src == 2) {
-        if (AT.status) *status = AT.status(AT.mgr);
+        *status = -1;
+        if (AT.status) { int st = AT.status(AT.mgr); if (st >= 0 && st <= 6) *status = st; }
         if (AT.headroom && (tick & 1) == 0) {   /* at most once per second (the API returns NaN when asked more often) */
             float h = AT.headroom(AT.mgr, 5);
-            if (h == h && h >= 0 && h < 10) *headroom = h;
+            *headroom = h == h && h >= 0 && h < 10 ? h : -1;
         }
         return;
     }
 #endif
-    (void)tick; (void)status;
+    (void)tick;
+    *headroom = -1; *status = -1;
     if (G.th_src != 3) return;
-    double best = -1, bt = 0, btrip = 0;
+    double best = -1, bt = 0, btrip = 0; int missing = 0;
     for (int i = 0; i < TZ.n; i++) {
-        long t = rd_long(TZ.temp[i]); if (t <= 0) continue;
+        long t = rd_long(TZ.temp[i]); if (t <= 0 || t > 150000 || TZ.trip[i] <= 0) { missing = 1; continue; }
         double r = (double)t / TZ.trip[i];
         if (r > best) { best = r; bt = (double)t; btrip = TZ.trip[i]; }
     }
     if (best >= 0) { *headroom = best; G.th_temp = bt / 1000; G.th_trip = btrip / 1000; }
+    if (missing) *status = GM_THERMAL_PARTIAL;
 }
 
 /* ================= the monitor ================= */
@@ -463,7 +590,7 @@ static void knobs_apply(const GmKnobs* k) {
     int t[3] = { hle_heavy_tid(0), hle_heavy_tid(1), hle_heavy_tid(2) };
     int tids_changed = !g_applied_ok || memcmp(t, g_applied_tids, sizeof t);
     gm_k.ahead = k->ahead; gm_k.workers = k->workers; gm_k.spin = k->spin; gm_k.adpf_ms10 = k->adpf_ms10;
-    gm_k.fps_limit = k->fps_limit; gm_k.aniso = k->aniso; gm_k.quality = k->quality; gm_k.level = k->level;
+    gm_k.fps_limit = k->fps_limit; gm_k.aniso = k->aniso; gm_k.quality = k->quality; gm_k.level = k->level; gm_k.lod_bias = k->lod_bias;
     if (G.mode != GM_OFF) {
         if (tids_changed || k->prime != g_applied.prime) hle_cpu_replace(k->prime);
         if (tids_changed || k->uclamp != g_applied.uclamp) if (k->uclamp || g_applied.uclamp) hle_cpu_uclamp(k->uclamp);
@@ -478,7 +605,8 @@ static void make_hud(void) {
     if (G.cls == GMC_CPU && G.which >= 0) n += snprintf(b + n, sizeof b - n, " %s", HEAVY_NAMES[G.which]);
     if (G.cpu_cores >= 0) n += snprintf(b + n, sizeof b - n, " | CPU %.0f/%d", G.cpu_cores, G.ncpu);
     if (G.s.gpu_busy >= 0) n += snprintf(b + n, sizeof b - n, " | GPU %.0f%%", G.s.gpu_busy * 100);
-    if (G.s.headroom >= 0) n += snprintf(b + n, sizeof b - n, " | heat %.0f%%", G.s.headroom * 100);
+    if (G.s.headroom >= 0) n += snprintf(b + n, sizeof b - n, G.s.thermal_status == GM_THERMAL_PARTIAL ? " | heat >=%.0f%%?" : " | heat %.0f%%", G.s.headroom * 100);
+    else if (G.s.thermal_status == GM_THERMAL_PARTIAL) n += snprintf(b + n, sizeof b - n, " | heat ?");
     if (gm_k.aniso > 1) snprintf(b + n, sizeof b - n, " | AF%d", gm_k.aniso);
     pthread_mutex_lock(&G.hmx); memcpy(G.hud_s, b, sizeof b); pthread_mutex_unlock(&G.hmx);
 }
@@ -497,10 +625,11 @@ static void* monitor_main(void* a) {
     double t0 = gm_now(), tlog = t0; uint64_t f0 = G.frames, d0 = G.draws, g0 = G.gpu_ns, gf0 = G.gpu_frames, fs0 = hle_fs_read_bytes();
     uint64_t w0[3] = { hle_heavy_wait_ns(0), hle_heavy_wait_ns(1), hle_heavy_wait_ns(2) };
     double gpu_last = -1; int gpu_age = 99, tick = 0;
-    double headroom = -1; int tstat = 0;
+    double headroom = -1; int tstat = -1;
     int htid0[3] = { 0, 0, 0 }; double hr0[3]; scan_threads(1, htid0, hr0);
     /* log accumulators */
     double acc_fps = 0, acc_gpu = 0; int acc_n = 0, acc_gpu_n = 0;
+    double tsave = t0;
     for (;;) {
         struct timespec ts = { 0, 500000000L }; nanosleep(&ts, NULL);
         double t = gm_now(), dt = t - t0; if (dt < 0.05) continue;
@@ -526,23 +655,37 @@ static void* monitor_main(void* a) {
         G.cpu_cores = total >= 0 ? total - waits : -1;
         thermal_read(tick, &headroom, &tstat);
         s.headroom = headroom; s.thermal_status = tstat;
-        s.fps_limit = G.limit;
+        s.fps_limit = __atomic_load_n(&G.limit, __ATOMIC_SEQ_CST);
+        s.video = hle_fs_video_open();
         int which; int cls = gm_classify(&s, &which);
         G.s = s; G.cls = cls; G.which = which;
         if (G.mode == GM_AUTO) {
             gm_policy_step(&pol, &s, cls, t, G.thr);
             GmKnobs k; gm_preset(pol.level, G.pool_max, &k);
-            k.ahead = pol.ahead >= 0 ? pol.ahead : k.ahead; k.aniso = pol.aniso; k.quality = pol.quality;
+            k.ahead = pol.ahead >= 0 ? pol.ahead : k.ahead; k.aniso = pol.aniso; k.quality = pol.quality; k.lod_bias = pol.lod_bias;
             apply_pins(&k);
             knobs_apply(&k);
         } else if (G.mode != GM_OFF) {
             GmKnobs k = g_applied;
             if (k.quality && !G.pinned[K_ANISO]) {   /* fixed presets keep their knobs; only the quality governor moves */
-                pol.level = k.level; pol.quality = 1; gm_policy_step(&pol, &s, cls, t, G.thr); k.aniso = pol.aniso;
+                pol.level = k.level; pol.quality = 1; gm_policy_step(&pol, &s, cls, t, G.thr); k.aniso = pol.aniso; k.lod_bias = pol.lod_bias;
             }
             knobs_apply(&k);   /* also re-applies placement/uclamp when a heavy thread appears */
         }
         make_hud();
+        pthread_mutex_lock(&G.smx);   /* v1.2.2: session statistics */
+        G.st_class[cls] += dt;
+        if (s.frames > 0) { G.st_level[gm_k.level & 3] += dt; G.st_play += dt; G.st_fps += s.fps * dt; }
+        if (s.frames > 0 && s.draws >= 60 && cls != GMC_VIDEO && cls != GMC_IDLE && cls != GMC_LOADING) {
+            G.st_active += dt; G.st_active_fps += s.fps * dt;
+            if (cls == GMC_GPU) G.st_active_gpu += dt;
+            if (cls == GMC_CAPPED) G.st_active_cap += dt;
+            gm_record_active_heat(&s, dt);
+        }
+        gm_record_thermal(&s, dt);
+        if (G.mode == GM_AUTO) { G.st_fails = pol.fails; G.st_floor = t < pol.floor_until ? pol.floor : -1; G.st_floor_s = t < pol.floor_until ? pol.floor_until - t : 0; }
+        pthread_mutex_unlock(&G.smx);
+        if (t - tsave >= 30) { tsave = t; gm_session_save(); }
         acc_fps += s.fps; acc_n++; if (s.gpu_busy >= 0) { acc_gpu += G.gpu_ms; acc_gpu_n++; }
         if (G.log_s > 0 && t - tlog >= G.log_s && s.frames > 0) {
             char hb[200]; int hn = 0; hb[0] = 0;
@@ -552,9 +695,11 @@ static void* monitor_main(void* a) {
                 if (cpu >= 0) hn += snprintf(hb + hn, sizeof hb - hn, " cpu%d", cpu);
                 if (ghz > 0) hn += snprintf(hb + hn, sizeof hb - hn, " %.2f GHz (%.0f%%)", ghz, pct);
             }
-            char th[96] = "";
+            char th[160] = "";
             if (s.headroom >= 0) { int k = snprintf(th, sizeof th, ", heat %.2f", s.headroom); if (G.th_src == 3) snprintf(th + k, sizeof th - k, " (%.0f C / trip %.0f C)", G.th_temp, G.th_trip); }
-            if (s.thermal_status) { size_t k = strlen(th); snprintf(th + k, sizeof th - k, ", thermal status %d", s.thermal_status); }
+            if (s.thermal_status == GM_THERMAL_PARTIAL) { size_t k = strlen(th); snprintf(th + k, sizeof th - k, ", thermal data incomplete"); }
+            if (s.thermal_status > 0) { size_t k = strlen(th); snprintf(th + k, sizeof th - k, ", thermal status %d", s.thermal_status); }
+            if (G.mode == GM_AUTO && t < pol.floor_until) { size_t k = strlen(th); snprintf(th + k, sizeof th - k, ", hold %s+ %.0f s (%d failed step%s down)", gm_mode_name(pol.floor), pol.floor_until - t, pol.fails, pol.fails == 1 ? "" : "s"); }
             uint64_t jp = P.jobs_par, js = P.jobs - P.jobs_par;
             fprintf(stderr, "[gearmass] %s%s%s: %s%s%s | %.1f fps, %.0f draws/frame | CPU %.1f/%d cores: %s%s | ahead %d, workers %d/%d (jobs %llu parallel, %llu serial), spin %d, prime %d, "
                     "adpf %.1f ms, uclamp %d, fps limit %d, aniso floor %d\n",
@@ -584,6 +729,8 @@ static void init_once(void) {
     G.thr = (e = getenv("ME1_GM_THERMAL")) && atof(e) > 0.3 ? atof(e) : 0.90; if (G.thr > 1.5) G.thr = 1.5;
     G.log_s = (e = getenv("ME1_GM_LOG")) ? atoi(e) : 5;
     G.hud = ((e = getenv("ME1_GM_HUD")) && *e == '1') || ((e = getenv("ME1_SHOW_FPS")) && *e == '1');
+    G.t_start = gm_now(); G.st_heat = -1; G.st_floor = -1;
+    { struct timespec id = {0,0}; clock_gettime(CLOCK_REALTIME, &id); snprintf(G.run_id,sizeof G.run_id,"%llx-%llx-%x",(unsigned long long)id.tv_sec,(unsigned long long)id.tv_nsec,(unsigned)getpid()); }
     GmKnobs k;
     if (G.mode == GM_OFF) {   /* as before GEARMASS: only the legacy variables */
         memset(&k, 0, sizeof k); k.level = GM_BALANCE; k.ahead = 1; k.aniso = 1;

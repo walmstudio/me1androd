@@ -185,7 +185,7 @@ static void* dlopen_any(const char* const* names) {
  * path of an AdrenoTools-style custom Vulkan driver (Turnip, Qualcomm/Mali builds: <dir>/<libraryName>.so), opened with libadrenotools.
  * The game keeps talking GLES: Mesa's libEGL_mesa/libGLESv2_mesa (zink) translate it to Vulkan. Surfaceless Mesa has no Android
  * window system, so frames reach the window through the CPU (ANativeWindow_lock, see the presenter). Any failure -> system GLES. */
-static int g_zink, g_cpupresent, g_cpuforce;
+static int g_zink, g_cpupresent, g_cpuforce, g_stretch;
 static char g_drvinfo[300];
 static int vk_has_ext(const char* ex, uint32_t n, const char* e) {
     for (uint32_t i = 0; i < n; i++) if (!strcmp(ex + i * 260, e)) return 1;
@@ -507,6 +507,12 @@ static int gl_init(void) {
     { const char* fe = getenv("ME1_FLOAT_EMU"); if (fe && *fe >= '0' && *fe <= '2') sm3_float_emu = *fe - '0'; }
     { const char* iv = getenv("ME1_INVARIANT"); if (iv && *iv >= '0' && *iv <= '1') sm3_invariant = *iv - '0'; }
     { const char* sl = getenv("ME1_SHADER_LITE"); sm3_lite = sl && *sl == '1'; }
+    /* ME1_STRETCH_MODE: 0 fit (proporscii, chernye polosa), 1 stretch (na ves ekran bez polos), 2 fill (rezka kraev) */
+    { const char* sm = getenv("ME1_STRETCH_MODE");
+        if (!sm || !*sm) g_stretch = 0;
+        else if (!strcmp(sm, "stretch")) g_stretch = 1;
+        else if (!strcmp(sm, "fill")) g_stretch = 2;
+        else g_stretch = 0; }
     glog("D3D9 float emulation %d (ME1_FLOAT_EMU: 0 IEEE, 1 clamp rcp/rsq/log/pow, 2 + 0*x=0 in mul/mad/dp), invariant position %d (ME1_INVARIANT), "
          "simplified calculation %d (ME1_SHADER_LITE: engine lighting/effects switches, FP16 for _pp values, cheap sRGB, anisotropy <= 2x, mm timer 5 ms, audio 32 kHz)\n", sm3_float_emu, sm3_invariant, sm3_lite);
     if (g_bincache[0] && glGetProgramBinary && glProgramBinary) glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &GX.nbin);
@@ -1454,13 +1460,13 @@ static uint32_t prim_verts(uint32_t pt, uint32_t n) {
  * The GLES and the Vulkan path (hle_d3d9_vk.h) both accumulate into g_gp and gp_report appends the totals to the
  * frame-times suffix of "[d3d] frame ...". Shared by both backends - this header is included first. */
 enum { GP_PROG, GP_TGT, GP_CONST, GP_TEX, GP_STATE, GP_VERT, GP_DRAW, GP_NST };
-static struct { uint64_t ns[GP_NST]; uint32_t n; } g_gp;
+static struct { uint64_t ns[GP_NST]; uint32_t n, nprof; } g_gp;   /* n: draws, nprof: the measured ones (v1.2.2: averages were 16x too small) */
 static void gp_report(char* o, size_t cap, size_t* k) {
-    if (!g_gp.n) return;
+    if (!g_gp.n || !g_gp.nprof) return;
     double us[GP_NST], tot = 0;
-    for (int i = 0; i < GP_NST; i++) { us[i] = g_gp.ns[i] / 1e3 / g_gp.n; tot += us[i]; }
+    for (int i = 0; i < GP_NST; i++) { us[i] = g_gp.ns[i] / 1e3 / g_gp.nprof; tot += us[i]; }
     if (*k < cap) *k += (size_t)snprintf(o + *k, cap - *k, ", CPU %.1f us/draw (program %.1f, targets %.1f, constants %.1f, textures %.1f, states %.1f, vertices %.1f, draw %.1f, %u samples)",
-                                         tot, us[GP_PROG], us[GP_TGT], us[GP_CONST], us[GP_TEX], us[GP_STATE], us[GP_VERT], us[GP_DRAW], g_gp.n);
+                                         tot, us[GP_PROG], us[GP_TGT], us[GP_CONST], us[GP_TEX], us[GP_STATE], us[GP_VERT], us[GP_DRAW], g_gp.nprof);
     memset(&g_gp, 0, sizeof g_gp);
 }
 /* ---- v1.1.3: occlusion queries. GLES 3 has no sample counts: GL_ANY_SAMPLES_PASSED_CONSERVATIVE says visible or hidden,
@@ -1516,7 +1522,7 @@ static void gl_draw(Dev* d, DrawCall* dc) {
     Obj* vso = rhw ? rhw_vs() : d->vs;
     if (!vso || !d->ps || !vso->gx || !d->ps->gx) { GS.skipped++; return; }
     GlSh* vs = vso->gx; GlSh* ps = d->ps->gx;
-    int prof = (g_gp.n = g_gp.n + 1, (g_gp.n & 15) == 0);
+    int prof = (g_gp.n = g_gp.n + 1, (g_gp.n & 15) == 1); g_gp.nprof += prof;
     double ts[GP_NST + 1]; if (prof) ts[0] = mono();
     GlProg* P = prog_get(C, vso, d->ps);
     if (!P || !P->ok) { GS.skipped++; return; }
@@ -1903,8 +1909,16 @@ static void gl_present(Obj* bb) {
     glcheck("present");
 }
 static void set_view(int ww, int wh, int fw, int fh) {
-    int vw = ww, vh = (int)((int64_t)ww * fh / (fw ? fw : 1));
-    if (vh > wh) { vh = wh; vw = (int)((int64_t)wh * fw / (fh ? fh : 1)); }
+    int vw = ww, vh = wh;
+    if (g_stretch == 1) { /* stretch: fill entire window */
+        vw = ww; vh = wh;
+    } else if (g_stretch == 2) { /* fill: crop to fill, keep aspect */
+        vw = ww; vh = (int)((int64_t)ww * fh / (fw ? fw : 1));
+        if (vh < wh) { vh = wh; vw = (int)((int64_t)wh * fw / (fh ? fh : 1)); }
+    } else { /* fit: letterbox, keep aspect */
+        vw = ww; vh = (int)((int64_t)ww * fh / (fw ? fw : 1));
+        if (vh > wh) { vh = wh; vw = (int)((int64_t)wh * fw / (fh ? fh : 1)); }
+    }
     g_view[0] = (ww - vw) / 2; g_view[1] = (wh - vh) / 2; g_view[2] = vw; g_view[3] = vh; g_view[4] = fw; g_view[5] = fh;
 }
 /* window position -> frame (back buffer) position; returns 0 outside the picture */
@@ -1996,7 +2010,12 @@ static int anw_load(void) {
 }
 static void cpu_present(void* win, const Slot* s, int ww, int wh, int* gw, int* gh, GLuint rfbo) {
     int fw = s->w, fh = s->h, bw = fw, bh = fh;
-    if ((int64_t)ww * fh > (int64_t)wh * fw) bw = (int)(((int64_t)fh * ww + wh / 2) / wh); else bh = (int)(((int64_t)fw * wh + ww / 2) / ww);
+    if (g_stretch == 1) { bw = ww; bh = wh; } /* stretch: fill entire window */
+    else if (g_stretch == 2) { /* fill: crop to fill, keep aspect */
+        if ((int64_t)ww * fh > (int64_t)wh * fw) bw = (int)(((int64_t)fh * ww + wh / 2) / wh); else bh = (int)(((int64_t)fw * wh + ww / 2) / ww);
+    } else { /* fit: letterbox, keep aspect */
+        if ((int64_t)ww * fh > (int64_t)wh * fw) bw = (int)(((int64_t)fh * ww + wh / 2) / wh); else bh = (int)(((int64_t)fw * wh + ww / 2) / ww);
+    }
     bw = (bw + 1) & ~1; if (bw < fw) bw = fw; if (bh < fh) bh = fh;
     if (bw != *gw || bh != *gh) { g_anw.geom(win, bw, bh, 2 /* WINDOW_FORMAT_RGBX_8888 */); *gw = bw; *gh = bh; }
     pthread_mutex_lock(&g_pmx); set_view(ww, wh, fw, fh); pthread_mutex_unlock(&g_pmx);

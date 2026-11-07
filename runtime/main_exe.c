@@ -1,3 +1,4 @@
+#include "pgo.h"
 /* MassEffect.exe runner: loads the recompiled game modules into guest memory and runs the EXE entry point
  * (MSVC CRT startup -> static constructors -> WinMain).
  *   msvcr80.dll (crt), msvcp80.dll (cpp), PhysXLoader.dll (pxl), [PhysXCore.dll (pxc) with -DWITH_PXC], MassEffect.exe (m),
@@ -19,6 +20,7 @@
  * the small launcher executable (run_main.c); no signal handlers there (ART owns the signals of an app process). */
 #include "rt.h"
 #include "hle.h"
+#include "me1settings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -107,6 +109,11 @@ int main(int argc, char** argv) {
         break;
     }
     g_game = argv[1];
+    { ME1Config cfg; char msg[512]; int ri;
+      me1cfg_load(&cfg, argv[1], argv[2]); int r=me1cfg_adapt_resolution(&cfg,msg,sizeof msg);
+      if (r || *msg) fprintf(stderr,"[gearmass] %s%s\n",r < 0 ? "auto resolution: " : "",msg);
+      if (me1cfg_find("screen.resolution",&ri)) setenv("ME1_GM_RENDER_RES",cfg.value[ri],1);
+    }
     rt_init();
     hle_fs_init(argv[1], argv[2], NULL);
     hle_set_cmdline(cmd);
@@ -193,5 +200,6 @@ int main(int argc, char** argv) {
     pthread_t th; pthread_create(&th, &a, run_entry, NULL); pthread_join(th, NULL); r = entry_ret;
     fprintf(stderr, "[exe] entry returned %u\n", r);
     hle_report();
+    me1_pgo_flush();   /* only normal completion, never the signal-handler path */
     return (int)r;
 }

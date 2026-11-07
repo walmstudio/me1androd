@@ -617,12 +617,15 @@ static uint32_t attrs_of(const struct stat* st) {
 /* ---------------- handles ---------------- */
 #define FH_BASE 0x1000u
 #define FH_MAX 1024
-typedef struct { int used, fd, writable, islog, logbol, ro; uint8_t* mem; uint64_t memsz, pos; struct stat st; char host[1024]; } FHandle;
+typedef struct { int used, fd, writable, islog, logbol, ro, isbik; uint8_t* mem; uint64_t memsz, pos; struct stat st; char host[1024]; } FHandle;
 /* heartbeat stats (hle_fs_brief) and engine-log echo: writes to Documents\BioWare\Mass Effect\Logs\*.log are copied to
  * stderr as "[log] ..." lines (ME1_ECHO_LOG=0 turns this off) */
 static uint64_t g_fs_opens, g_fs_rbytes, g_fs_reads, g_fs_fails, g_fs_open_ns; static char g_fs_last[256]; static int g_echo_log = -1;
 uint64_t hle_fs_read_bytes(void);
 uint64_t hle_fs_read_bytes(void) { return __atomic_load_n(&g_fs_rbytes, __ATOMIC_RELAXED); }   /* v1.2.1: GEARMASS spots loading screens */
+static int g_fs_bik;   /* v1.2.2: Bink movies open (GEARMASS class "video") */
+int hle_fs_video_open(void) { return __atomic_load_n(&g_fs_bik, __ATOMIC_RELAXED); }
+const char* hle_fs_docs(void) { return g_docs[0] ? g_docs : NULL; }   /* v1.2.2: me1_gearmass_last.txt */
 void hle_fs_brief(char* o, size_t n) {
     snprintf(o, n, "fs: %llu opens (%llu failed, %.1f s in CreateFile), %llu reads, %.1f MB read, %llu dirs listed; last opened: %s",
              (unsigned long long)g_fs_opens, (unsigned long long)g_fs_fails, g_fs_open_ns / 1e9, (unsigned long long)g_fs_reads,
@@ -693,6 +696,7 @@ static uint32_t do_create(CPU* c, const char* path, uint32_t access, uint32_t di
         if (flags & 0x04000000u) { unlink(host); dc_drop_parent(host); }   /* FILE_FLAG_DELETE_ON_CLOSE: Unix semantics are close enough */
     }
     SETERR(okerr);
+    { size_t L = strlen(w); if (!wr && L > 4 && !strcasecmp(w + L - 4, ".bik")) { f->isbik = 1; __atomic_add_fetch(&g_fs_bik, 1, __ATOMIC_RELAXED); } }
     g_fs_opens++; snprintf(g_fs_last, sizeof g_fs_last, "%s", w);
     if (g_echo_log < 0) { const char* e = getenv("ME1_ECHO_LOG"); g_echo_log = !e || atoi(e) != 0; }
     if (wr && g_echo_log) { size_t L = strlen(host); f->islog = L > 4 && !strcasecmp(host + L - 4, ".log") && strstr(host, "/Logs/") != NULL; f->logbol = 1; }
@@ -815,7 +819,8 @@ static void k_GetFileInformationByHandle(CPU* c) {
 static void k_CloseHandle(CPU* c) {
     if (hle_kobj_close(ARG(0))) { RET(1); return; }   /* events, mutexes, semaphores, threads (hle_thread.c) */
     FHandle* f = fh_get(ARG(0));
-    if (f) { if (f->fd >= 0) close(f->fd); free(f->mem); f->used = 0; if (f->writable && g_lite_host[0]) lite_restore(f->host); }
+    if (f) { if (f->isbik) __atomic_sub_fetch(&g_fs_bik, 1, __ATOMIC_RELAXED);
+             if (f->fd >= 0) close(f->fd); free(f->mem); f->used = 0; if (f->writable && g_lite_host[0]) lite_restore(f->host); }
     RET(1);   /* events, mutexes, processes: nothing to release */
 }
 static void k_Ret1(CPU* c) { RET(1); }

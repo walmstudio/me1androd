@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/home/webmast/me1-port/me1-token/tools/ilt_seeds.py", line 7, in <module>
+    pe = PE(sys.argv[1]); img = bytes(pe.img); out = set(); i = 0; n = len(img)
+         ^^^^^^^^^^^^^^^
+  File "/home/webmast/me1-port/me1-token/tools/pefile_min.py", line 41, in __init__
+    self._relocs()
+  File "/home/webmast/me1-port/me1-token/tools/pefile_min.py", line 99, in _relocs
+    if e >> 12 == 3: self.relocs.append(page + (e & 0xfff))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt

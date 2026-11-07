@@ -119,7 +119,7 @@ static Obj* g_qopen;        /* the occlusion query between Issue(BEGIN) and Issu
 #ifdef __ANDROID__
 static int g_occl = 2;      /* ME1_OCCLUSION (v1.2: Android never waits for the GPU by default, Linux 1) */
 #else
-static int g_occl = 1;      /* ME1_OCCLUSION */
+static int g_occl = 2;      /* ME1_OCCLUSION: 2 = never wait (default, avoids GPU stalls; set ME1_OCCLUSION=1 to wait) */
 #endif
 static struct { uint64_t issued, ready, zero, fallback, notready, flushes, waits; double wait_s; } g_qs, g_qs0;
 static void gl_query_begin(Obj* q); static void gl_query_end(Obj* q); static int gl_query_data(Obj* q, uint32_t flags, uint32_t* out);
@@ -162,12 +162,13 @@ static double mono(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t)
  * (log 0.10.9: 4 deaths in 9 frames). ME1_VK_LOSTRESET=1 opts back in; without it: old behaviour
  * (one DEVICE_LOST -> black screen + Toast). GLES is unaffected. */
 #define D3DERR_DEVICELOST_ 0x88760868u
-static int g_d3dlost; static double g_d3dlostt; static int g_lostreset_ok;
+#define D3DERR_DEVICENOTRESET_ 0x88760869u
+static _Atomic int g_d3dlost; static _Atomic double g_d3dlostt; static int g_lostreset_ok;
 static int g_vklost;   /* defined in hle_d3d9_vk.h */
 static void d3d_device_lost(void) {
     const char* e = getenv("ME1_VK_LOSTRESET"); if (!(e && *e == '1')) return;
     g_lostreset_ok = 1;
-    if (!g_d3dlost) { g_d3dlost = 1; g_d3dlostt = mono(); fprintf(stderr, "[d3d] Vulkan device lost - recovery is off (ME1_VK_LOSTRESET=1 to enable)\n"); }
+    if (!g_d3dlost) { g_d3dlostt = mono(); g_d3dlost = 1; fprintf(stderr, "[d3d] Vulkan device lost - experimental recovery enabled\n"); }
 }
 static int vk_device_reset(void);   /* hle_d3d9_vk.h */
 
@@ -1243,7 +1244,7 @@ static int q_start(void) {   /* at CreateDevice: the ring (guest memory) and the
     return g_cmd;
 }
 static void init_cb(void* a) { *(int*)a = gl_init(); }
-static void vkreset_cb(void* a) { *(int*)a = vk_device_reset(); }
+static void vkreset_cb(void* a) { *(int*)a = !g_vklost || vk_device_reset(); }
 static int q_vk_reset(void) { int r = 0; q_call(vkreset_cb, &r); return r; }
 static void report_cb(void* a) { (void)a; gl_report(); }
 /* the "[d3d] frame" suffix: the replay computes it at its next Present (one log period late) */
@@ -1341,7 +1342,7 @@ static uint32_t m_Reset(CPU* c) {
     Dev* d = DEVOF(SELF); uint32_t ppp = A(1);
     if (!d || !ppp) return ERR_INVALIDCALL;
     if (g_d3dlost && g_vk) {   /* v0.10.7: the game reacts to D3DERR_DEVICELOST - re-create the Vulkan device */
-        if (g_vklost && !q_vk_reset()) return D3DERR_DEVICELOST_;
+        if (!q_vk_reset()) return D3DERR_DEVICELOST_;
         g_d3dlost = 0;
         fprintf(stderr, "[d3d] Reset: device re-created, rendering continues\n");
     }
@@ -1392,6 +1393,7 @@ static uint32_t present(Obj* bb) {
     double slept = g_fpslimit ? fps_limit() : 0;
     hle_adpf_frame(g_fpslimit, slept);   /* v0.10.13: ADPF hint (Android 12+; ME1_ADPF=0 disables) */
     g_st.frames++;
+    if (bb) gm_frame_size(bb->w, bb->h);
     gm_frame(g_st.draws, slept, g_fpslimit);
     double t = mono();
     if (t - g_pft0 >= 0.5) {
@@ -1439,7 +1441,7 @@ static uint32_t present(Obj* bb) {
     }
     return OK_;
 }
-static uint32_t m_TestCooperativeLevel(CPU* c) { (void)c; return g_d3dlost ? D3DERR_DEVICELOST_ : OK_; }   /* v0.10.7 */
+static uint32_t m_TestCooperativeLevel(CPU* c) { (void)c; return !g_d3dlost ? OK_ : mono() - g_d3dlostt < 5.0 ? D3DERR_DEVICELOST_ : D3DERR_DEVICENOTRESET_; }
 static uint32_t m_GetAvailableTextureMem(CPU* c) { (void)c; return g_vram >= 4095 ? 0xFFF00000u : g_vram << 20; }
 static uint32_t m_GetDirect3D(CPU* c) { Dev* d = DEVOF(SELF); if (!d || !A(1)) return ERR_INVALIDCALL; if (d->d3d) addref(d->d3d); return out_obj(A(1), d->d3d); }
 static uint32_t m_Dev_GetDeviceCaps(CPU* c) { if (!A(1)) return ERR_INVALIDCALL; fill_caps(A(1)); return OK_; }
@@ -1463,7 +1465,7 @@ static uint32_t m_GetSwapChain(CPU* c) {
     addref(d->swap); return out_obj(A(2), d->swap);
 }
 static uint32_t m_one(CPU* c) { (void)c; return 1; }
-static uint32_t m_Dev_Present(CPU* c) { if (g_d3dlost) return D3DERR_DEVICELOST_; Dev* d = DEVOF(SELF); return present(d && d->swap ? d->swap->bb : NULL); }
+static uint32_t m_Dev_Present(CPU* c) { Dev* d = DEVOF(SELF); return present(d && d->swap ? d->swap->bb : NULL); }
 static uint32_t m_Dev_GetBackBuffer(CPU* c) {
     Dev* d = DEVOF(SELF); uint32_t pp = A(4); if (!d || !pp) return ERR_INVALIDCALL;
     if (A(1) || A(2) >= d->swap->pp[3]) { wr32(pp, 0); return ERR_INVALIDCALL; }
@@ -1703,7 +1705,7 @@ static uint32_t m_CreateQuery(CPU* c) {
     wr32(pp, o->g); return OK_;
 }
 /* IDirect3DSwapChain9 */
-static uint32_t m_Swap_Present(CPU* c) { if (g_d3dlost) return D3DERR_DEVICELOST_; Obj* s = SELF; return present(s && s->type == T_SWAP ? s->bb : NULL); }
+static uint32_t m_Swap_Present(CPU* c) { Obj* s = SELF; return present(s && s->type == T_SWAP ? s->bb : NULL); }
 static uint32_t m_Swap_GetBackBuffer(CPU* c) {
     Obj* s = SELF; uint32_t pp = A(3); if (!s || !pp) return ERR_INVALIDCALL;
     if (A(1) >= s->pp[3]) { wr32(pp, 0); return ERR_INVALIDCALL; }

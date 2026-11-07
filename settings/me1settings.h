@@ -40,6 +40,8 @@ typedef struct {
 
 const SettingDef* me1cfg_find(const char* id, int* index);
 int   me1cfg_load(ME1Config* c, const char* game_dir, const char* docs_dir);
+/* Refresh values changed externally while preserving unsaved local edits. */
+int   me1cfg_refresh_clean(ME1Config* c);
 int   me1cfg_set(ME1Config* c, const char* id, const char* value, char* err, size_t errcap);   /* 0 ok */
 int   me1cfg_preset(ME1Config* c, const char* preset, char* err, size_t errcap);
 int   me1cfg_reset(ME1Config* c);                       /* back to Default*.ini values */
@@ -52,6 +54,8 @@ typedef struct {
 } ME1Device;
 int   me1cfg_classify(const ME1Device* d, char* report, size_t cap, int* fps, char* res, size_t rescap);   /* -> tier */
 int   me1cfg_auto(ME1Config* c, const ME1Device* d, char* report, size_t cap);   /* applies; -> tier or -1 */
+/* Opt-in next-session resolution adaptation. Returns 1 changed, 0 no change, -1 error. */
+int   me1cfg_adapt_resolution(ME1Config* c, char* msg, size_t cap);
 int   me1cfg_save(ME1Config* c, char* msg, size_t cap); /* 0 ok */
 char* me1cfg_dump(const ME1Config* c);                  /* malloc'd "id=value\tsource\n" lines */
 char* me1cfg_schema_json(void);                         /* malloc'd JSON for UIs */

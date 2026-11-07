@@ -1,3 +1,4 @@
+#include "pgo.h"
 /* HLE implementations of Win32 APIs (stage 0: what statically-linked MSVC CRT needs). */
 #define _GNU_SOURCE
 #include "hle.h"
@@ -88,7 +89,22 @@ static void k_GetCurrentProcess(CPU* c) { RET(0xFFFFFFFFu); }
 static void k_GetCommandLineA(CPU* c) { static uint32_t p; if (!p) p = gstrdup(g_cmdline); RET(p); }
 static void k_GetCommandLineW(CPU* c) { static uint32_t p; if (!p) p = gwstrdup(g_cmdline); RET(p); }
 static void k_TerminateProcess(CPU* c) { fprintf(stderr, "[hle] TerminateProcess(%u)\n", ARG(1)); exit((int)ARG(1)); }
-static void k_ExitProcess(CPU* c) { fprintf(stderr, "[hle] ExitProcess(%u)\n", ARG(0)); exit((int)ARG(0)); }
+/* v1.2.2: ExitProcess no longer runs exit(): the atexit handlers and static destructors of the GPU driver and the C++
+ * libraries ran while other threads (driver workers, audio, the replay thread) still used their mutexes - bionic aborted
+ * with "FORTIFY: pthread_mutex_lock called on a destroyed mutex" (a native crash report after every normal quit).
+ * Now: the reports (they also save the Vulkan pipeline cache and the GEARMASS statistics), all stdio buffers flushed,
+ * the platform hook (Android: GameActivity.onGameExit), then _exit. */
+void (*hle_exit_hook)(int code);
+static void k_ExitProcess(CPU* c) {
+    int code = (int)ARG(0);
+    fprintf(stderr, "[hle] ExitProcess(%u)\n", ARG(0));
+    void hle_report(void); hle_report();
+    me1_pgo_flush();   /* instrumented Linux builds: _exit skips gcov atexit */
+    fflush(NULL);
+    if (hle_exit_hook) hle_exit_hook(code);
+    fflush(NULL);
+    _exit(code);
+}
 static void k_IsDebuggerPresent(CPU* c) { RET(0); }
 static void k_GetModuleHandleA(CPU* c) {
     uint32_t n = ARG(0);

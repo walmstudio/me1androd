@@ -46,7 +46,7 @@
     X(vkDestroyCommandPool) X(vkResetCommandPool) X(vkAllocateCommandBuffers) X(vkFreeCommandBuffers) X(vkBeginCommandBuffer) X(vkEndCommandBuffer) \
     X(vkCmdBindPipeline) X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdSetDepthBias) X(vkCmdSetBlendConstants) \
     X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdSetStencilReference) X(vkCmdBindDescriptorSets) \
-    X(vkCmdBindIndexBuffer) X(vkCmdBindVertexBuffers) X(vkCmdDraw) X(vkCmdDrawIndexed) X(vkCmdCopyImage) X(vkCmdBlitImage) \
+    X(vkCmdBindIndexBuffer) X(vkCmdBindVertexBuffers) X(vkCmdExecuteCommands) X(vkCmdDraw) X(vkCmdDrawIndexed) X(vkCmdCopyImage) X(vkCmdBlitImage) \
     X(vkCmdCopyBufferToImage) X(vkCmdCopyImageToBuffer) X(vkCmdClearColorImage) X(vkCmdClearDepthStencilImage) X(vkCmdClearAttachments) X(vkCmdPipelineBarrier) \
     X(vkCmdBeginRenderPass) X(vkCmdEndRenderPass) X(vkCmdResetQueryPool) X(vkCmdWriteTimestamp) X(vkCreateQueryPool) X(vkCmdBeginQuery) X(vkCmdEndQuery) \
     X(vkDestroyQueryPool) X(vkGetQueryPoolResults)
@@ -85,7 +85,7 @@ static int vok(VkResult r, const char* what) {
     if (r >= 0) return 1;
     if (g_vokn++ < 40) vlog("%s: %s failed: VkResult %d\n", g_cur ? g_cur : "-", what, (int)r);
     if (r == VK_ERROR_DEVICE_LOST && !g_vklost) {
-        g_vklost = 1; vlog("DEVICE LOST - re-creating the device (see vk_device_reset)\n");
+        g_vklost = 1; vlog("DEVICE LOST detected (recovery requires ME1_VK_LOSTRESET=1)\n");
         if (g_vpcpath[0]) { if (remove(g_vpcpath) == 0) vlog("pipeline cache %s deleted (a stale cache can crash the driver)\n", g_vpcpath); }
         d3d_device_lost();   /* v0.10.7: the game is told through the D3D9 flow; present() recovers on its own after 5 s */
     }
@@ -286,8 +286,12 @@ static void dead_reap(void) {
 /* ---- frame slots: command buffers, rings, fence ---- */
 typedef struct { VkBuffer buf; VMem m; uint8_t* p; VkDeviceSize size, off; VkDescriptorSet uset; } Chunk;
 typedef struct { Chunk* c; int n, cap, cur; VkBufferUsageFlags use; VkDeviceSize def, slack; } Ring;
+typedef struct { VkCommandPool pool; VkCommandBuffer* cb; uint32_t n, cap, used; } VSecLane;
+#define SEC_LANES 4
+#define SEC_BATCH 64
 typedef struct {
     VkCommandPool pool; VkCommandBuffer cmd, up; int upon;
+    VSecLane sec[SEC_LANES];
     VkCommandBuffer xcmd[64]; uint32_t nx;   /* v0.10.3: finished chunks of this frame, submitted without a fence (v0.10.13: 64, freed in slot_begin) */
     uint32_t cdraws;                         /* draws recorded into the current chunk */
     uint64_t cprims;                         /* v0.10.12 (P0-4): primitives recorded into the current chunk */
@@ -302,6 +306,30 @@ typedef struct {
     VkQueryPool op[16]; uint32_t nop, on; int ost; uint64_t rser;
 } VSlot;
 static VSlot S[NSLOT]; static int g_si;
+static int g_sec_on, g_sec_fail_test;
+static VkDescriptorSet g_sec_last_tex;
+static uint64_t g_sec_batches, g_sec_draws, g_sec_parallel, g_sec_fallback;
+/* v1 observability counters */
+static uint64_t g_pc_hits, g_pc_misses;          /* pipeline cache */
+static double g_spv_compile_s, g_pipe_create_s;  /* shader/SPIR-V compile + pipeline creation time */
+static uint64_t g_chunk_flush_n;                 /* chunk flush count */
+static uint64_t g_vklost_count, g_vkrecover_count;
+static uint64_t g_swap_recreate;
+static uint64_t g_ring_pressure, g_stg_pressure; /* ring/staging new-chunk allocations */
+static uint64_t g_vk_mip_par_slices;             /* G3: slices decoded via ME1_VK_MIP_PARALLEL outer loop */
+static uint64_t g_sec_lanes_used;
+static void sec_free_hosts(void) {
+    for (int s = 0; s < NSLOT; s++) for (int i = 0; i < SEC_LANES; i++) {
+        free(S[s].sec[i].cb); S[s].sec[i].cb = NULL;
+    }
+}
+static void sec_slot_reset(VSlot* s) {
+    for (int i = 0; i < SEC_LANES; i++) {
+        if (s->sec[i].pool) vkResetCommandPool(VD, s->sec[i].pool, 0);
+        s->sec[i].used = 0;
+    }
+    g_sec_last_tex = VK_NULL_HANDLE;
+}
 #define VQP 4096u
 #define VQPOOLS 16u
 static uint32_t g_ores[NSLOT][VQP * VQPOOLS];   /* results of the finished slot (UINT32_MAX: not available) */
@@ -375,7 +403,8 @@ static struct { uint64_t ns, nf; double wait, waitf; uint64_t subs; } VT;
 static void slot_finish(VSlot* s);
 static void slot_begin(void) {
     VSlot* s = CS;
-    if (s->pending) { double t = mono(); vok(vkWaitForFences(VD, 1, &s->fence, VK_TRUE, UINT64_MAX), "vkWaitForFences"); VT.wait += mono() - t; slot_finish(s); }
+    if (s->pending) { double t = mono(); int ok = vok(vkWaitForFences(VD, 1, &s->fence, VK_TRUE, UINT64_MAX), "vkWaitForFences"); VT.wait += mono() - t; if (!ok) return; slot_finish(s); }
+    if (g_vklost) return;
     vkResetFences(VD, 1, &s->fence);
     /* v0.10.13 (N1): the chunk command buffers of the finished frame go back to the pool - vkResetCommandPool only resets
      * them, so without vkFreeCommandBuffers every split allocated two more for the life of the process */
@@ -383,6 +412,7 @@ static void slot_begin(void) {
       for (uint32_t i = 0; i < s->nx; i++) if (s->xcmd[i] && s->xcmd[i] != s->cmd && s->xcmd[i] != s->up) fr[k++] = s->xcmd[i];
       if (k) vkFreeCommandBuffers(VD, s->pool, k, fr); }
     vkResetCommandPool(VD, s->pool, 0);
+    sec_slot_reset(s);
     s->nx = 0; s->cdraws = 0; s->cprims = 0;
     ring_reset(&s->vtx); ring_reset(&s->ubo); ring_reset(&s->stg);
     for (int i = 0; i < s->ndp; i++) vkResetDescriptorPool(VD, s->dp[i], 0);
@@ -434,7 +464,7 @@ static void vk_chunk_flush(void) {
     if (vkAllocateCommandBuffers(VD, &cai, &nc) == VK_SUCCESS) {
         s->cmd = nc;
         VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL };
-        if (vkBeginCommandBuffer(s->cmd, &bi) == VK_SUCCESS) vb_cmd_defaults(s->cmd);
+        if (vkBeginCommandBuffer(s->cmd, &bi) == VK_SUCCESS) { vb_cmd_defaults(s->cmd); g_sec_last_tex = VK_NULL_HANDLE; }
     }
     s->cdraws = 0; s->cprims = 0;
 }
@@ -593,6 +623,16 @@ static VkImageView att_view(VRes* r, uint32_t face, uint32_t vlvl) {
     if (!r->av[i]) r->av[i] = mk_view(r, VK_IMAGE_VIEW_TYPE_2D, vlvl, 1, face, 1, NULL);
     return r->av[i];
 }
+/* G3 helper: worker for optional outer parallelization across depth slices */
+typedef struct { int cv, pk; uint32_t bsz, bx, by, ob, ow, oh, pitch, slice; const uint8_t* src; uint8_t* q; } VkMipSliceJob;
+static void vk_mip_slice_worker(void* ctx, int lo, int hi) {
+    VkMipSliceJob* j = ctx;
+    for (int k = lo; k < hi; k++) {
+        const uint8_t* s0 = j->src + (size_t)k * j->slice;
+        uint8_t* qk = j->q + (size_t)k * j->ow * j->oh * j->ob;
+        dec_rect(j->cv, j->pk, j->bsz, j->bx, j->by, j->ob, s0, j->pitch, qk);
+    }
+}
 /* upload the rect of level lvl / face from guest data (D3D layout: rows of 4x4 blocks for compressed formats) */
 static void vtex_upload(Obj* t, VRes* r, uint32_t face, uint32_t lvl, uint32_t x, uint32_t y, uint32_t z,
                         uint32_t w, uint32_t h, uint32_t dz, const uint8_t* src, uint32_t pitch, uint32_t slice) {
@@ -618,9 +658,18 @@ static void vtex_upload(Obj* t, VRes* r, uint32_t face, uint32_t lvl, uint32_t x
         uint32_t ow = bx * 4, oh = by * 4;
         int pk = ob == 4 ? PK_RGBA8 : ob == 1 ? PK_R8 : r->vf == VK_FORMAT_R8G8_UNORM ? PK_RG8 : r->vf == VK_FORMAT_A1R5G5B5_UNORM_PACK16 ? PK_VK1555
                : r->vf == VK_FORMAT_R5G6B5_UNORM_PACK16 ? PK_565 : PK_VK4444;
-        for (uint32_t k = 0; k < dz; k++) {
-            const uint8_t* s0 = src + (size_t)k * slice; uint8_t* qk = q + (size_t)k * ow * oh * ob;
-            dec_rect(f->conv, pk, bsz, bx, by, ob, s0, pitch, qk);   /* v1.2.1: on GEARMASS workers */
+        /* G3: optional outer parallelization across depth slices (mip/face handled by caller).
+         * Default OFF to keep behavior unchanged; ME1_VK_MIP_PARALLEL=1 opts in. */
+        static int mip_par = -1; if (mip_par < 0) { const char* e = getenv("ME1_VK_MIP_PARALLEL"); mip_par = (e && *e == '1'); }
+        if (mip_par && dz > 1) {
+            VkMipSliceJob js = { f->conv, pk, bsz, bx, by, ob, ow, oh, pitch, slice, src, q };
+            gm_parallel_for((int)dz, vk_mip_slice_worker, &js, 1);
+            g_vk_mip_par_slices += dz;
+        } else {
+            for (uint32_t k = 0; k < dz; k++) {
+                const uint8_t* s0 = src + (size_t)k * slice; uint8_t* qk = q + (size_t)k * ow * oh * ob;
+                dec_rect(f->conv, pk, bsz, bx, by, ob, s0, pitch, qk);   /* v1.2.1: on GEARMASS workers */
+            }
         }
         GS.decoded++;
     } else if (f->conv == CV_RAW) {
@@ -739,7 +788,7 @@ typedef struct { uint64_t k[5]; int rpc; uint32_t w, h, tick; VkFramebuffer fb; 
 static VFbo g_vfb[NVFB]; static uint32_t g_vfbtick;
 static uint64_t att_key(const Att* a) { return a->r ? ((uint64_t)a->r->serial << 16 | a->face << 8 | a->lvl) : 0; }
 static struct {
-    Att c[4], ds; int nc, tf, open, rpc; uint32_t w, h, clr; VkClearValue cv[6]; VkFramebuffer fb;
+    Att c[4], ds; int nc, tf, open, rpc, secondary; uint32_t w, h, clr; VkClearValue cv[6]; VkFramebuffer fb; VkRenderPass pass;
 } RP;
 static int att_of(Obj* s, Att* a) {
     memset(a, 0, sizeof *a);
@@ -778,7 +827,106 @@ static void fb_purge(uint32_t serial) {
         if (hit) { dead_add(f->use, 4, H(f->fb), NULL); memset(f, 0, sizeof *f); }
     }
 }
-static void rp_begin(void) {
+/* Experimental secondary rendering: immutable draw snapshots, at most four
+ * independently owned command pools, joined before primary execution. */
+typedef struct {
+    VkPipeline pipe; VkDescriptorSet ubo, tex; uint32_t uoff[2];
+    VkBuffer vb[17], ib; VkDeviceSize vo[17], io; uint32_t nb; VkIndexType it;
+    VkViewport vp; VkRect2D sc; float bias, slope, bc[4]; uint32_t ref, mask, wmask;
+    uint32_t count, instances, first; int32_t voff; int indexed;
+} VSecDraw;
+static VSecDraw g_secd[SEC_BATCH]; static int g_secn;
+static void sec_encode(VkCommandBuffer cb, const VSecDraw* d) {
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, d->pipe);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pl, 0, 1, &d->ubo, 2, d->uoff);
+    if (d->tex) vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pl, 1, 1, &d->tex, 0, NULL);
+    if (d->nb) vkCmdBindVertexBuffers(cb, 0, d->nb, d->vb, d->vo);
+    if (d->indexed) vkCmdBindIndexBuffer(cb, d->ib, d->io, d->it);
+    vkCmdSetViewport(cb, 0, 1, &d->vp); vkCmdSetScissor(cb, 0, 1, &d->sc);
+    vkCmdSetDepthBias(cb, d->bias * 16777215.f, 0.f, d->slope);
+    vkCmdSetBlendConstants(cb, d->bc);
+    vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, d->ref);
+    vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, d->mask);
+    vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, d->wmask);
+    if (d->indexed) vkCmdDrawIndexed(cb, d->count, d->instances, d->first, d->voff, 0);
+    else vkCmdDraw(cb, d->count, d->instances, d->first, 0);
+}
+typedef struct { int lanes, count; VkCommandBuffer cb[SEC_LANES]; VkResult result[SEC_LANES]; VkRenderPass pass; VkFramebuffer fb; } VSecJob;
+static void sec_worker(void* ctx, int lo, int hi) {
+    VSecJob* j = ctx;
+    for (int i = lo; i < hi; i++) {
+        VkCommandBufferInheritanceInfo inh = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO, NULL, j->pass, 0, j->fb, VK_FALSE, 0, 0 };
+        VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+            VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT | VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &inh };
+        VkResult r = vkBeginCommandBuffer(j->cb[i], &bi);
+        if (r == VK_SUCCESS) {
+            int a = j->count * i / j->lanes, b = j->count * (i + 1) / j->lanes;
+            for (int k = a; k < b; k++) sec_encode(j->cb[i], &g_secd[k]);
+            r = vkEndCommandBuffer(j->cb[i]);
+        }
+        j->result[i] = r;
+    }
+}
+static VkResult sec_allocate(VSlot* s, int lane, VkCommandBuffer* out) {
+    VSecLane* l = &s->sec[lane];
+    if (g_sec_fail_test > 0 && --g_sec_fail_test == 0) return VK_ERROR_OUT_OF_HOST_MEMORY;
+    if (!l->pool) {
+        VkCommandPoolCreateInfo ci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL, VK_COMMAND_POOL_CREATE_TRANSIENT_BIT, VQF };
+        VkResult r = vkCreateCommandPool(VD, &ci, NULL, &l->pool); if (r != VK_SUCCESS) return r;
+    }
+    if (l->used == l->n) {
+        if (l->n == l->cap) {
+            uint32_t cap = l->cap ? l->cap * 2 : 16;
+            VkCommandBuffer* p = realloc(l->cb, cap * sizeof *p); if (!p) return VK_ERROR_OUT_OF_HOST_MEMORY;
+            l->cb = p; l->cap = cap;
+        }
+        VkCommandBufferAllocateInfo ai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL, l->pool, VK_COMMAND_BUFFER_LEVEL_SECONDARY, 1 };
+        VkResult r = vkAllocateCommandBuffers(VD, &ai, &l->cb[l->n]); if (r != VK_SUCCESS) return r;
+        l->n++;
+    }
+    *out = l->cb[l->used++]; return VK_SUCCESS;
+}
+static void rp_begin(void);
+static void sec_invalidate_bindings(void) {
+    VB.pipe = VK_NULL_HANDLE; VB.set0 = VB.set1 = VK_NULL_HANDLE;
+    memset(VB.vb, 0, sizeof VB.vb); VB.ib = VK_NULL_HANDLE;
+    VB.vp.width = -1.f; VB.sc.extent.width = UINT32_MAX;
+    VB.bias[0] = VB.bias[1] = NAN; for (int i = 0; i < 4; i++) VB.bc[i] = NAN;
+    VB.sref = VB.smask = VB.swmask = UINT32_MAX;
+}
+static void sec_flush(void) {
+    if (!g_secn) return;
+    VSecJob j; memset(&j, 0, sizeof j); j.count = g_secn;
+    j.lanes = (g_secn + 15) / 16; if (j.lanes > SEC_LANES) j.lanes = SEC_LANES;
+    j.pass = RP.pass; j.fb = RP.fb; VkResult err = VK_SUCCESS;
+    for (int i = 0; i < j.lanes; i++) if ((err = sec_allocate(CS, i, &j.cb[i])) != VK_SUCCESS) break;
+    if (err == VK_SUCCESS) {
+        gm_parallel_for(j.lanes, sec_worker, &j, 1);
+        for (int i = 0; i < j.lanes; i++) if (j.result[i] != VK_SUCCESS) { err = j.result[i]; break; }
+    }
+    if (err == VK_SUCCESS) {
+        vkCmdExecuteCommands(CS->cmd, j.lanes, j.cb);
+        g_sec_batches++; g_sec_draws += (uint64_t)g_secn;
+        if (j.lanes > 1 && gm_k.workers > 0) g_sec_parallel++;
+    } else {
+        vok(err, "secondary command recording"); g_sec_fallback++;
+        /* No secondary buffer was executed. Reopen the attachments with LOAD
+         * and replay every snapshot in order on the primary command buffer. */
+        if (!g_vklost) vkCmdEndRenderPass(CS->cmd);
+        RP.open = 0; RP.secondary = 0; g_sec_on = 0;
+        if (!g_vklost) {
+            rp_begin();
+            for (int k = 0; k < g_secn; k++) sec_encode(CS->cmd, &g_secd[k]);
+            sec_invalidate_bindings();
+            vlog("secondary recording failed; reverted to inline draws\n");
+        }
+    }
+    g_secn = 0;
+}
+static void rp_end(void);
+static void rp_begin_mode(int secondary) {
+    if (RP.open && RP.secondary != secondary) rp_end();
+    if (!g_sec_on) secondary = 0;
     if (RP.open || !RP.tf) return;
     VkCommandBuffer cb = CS->cmd;
     for (int i = 0; i < RP.nc; i++) if (RP.c[i].r) { Att* a = &RP.c[i]; img_to(cb, a->r, a->face, 1, a->lvl, 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL); a->r->use = a->r->mainuse = g_vserial; }
@@ -787,14 +935,17 @@ static void rp_begin(void) {
     for (int i = 0; i < RP.nc; i++) if (RP.c[i].r) cv[n++] = RP.cv[i];
     if (RP.ds.r) { cv[n].depthStencil.depth = RP.cv[4].depthStencil.depth; cv[n].depthStencil.stencil = RP.cv[5].depthStencil.stencil; n++; }
     VkRenderPassBeginInfo bi = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, NULL, rpc_get(RP.rpc, RP.clr), fb_get(), { { 0, 0 }, { RP.w, RP.h } }, n, cv };
-    vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
-    RP.open = 1; RP.clr = 0;
+    vkCmdBeginRenderPass(cb, &bi, secondary ? VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS : VK_SUBPASS_CONTENTS_INLINE);
+    RP.pass = bi.renderPass; RP.fb = bi.framebuffer; RP.secondary = secondary; RP.open = 1; RP.clr = 0;
 }
+static void rp_begin(void) { rp_begin_mode(0); }
 static void rp_end(void) {
-    if (!RP.open && RP.clr && RP.tf) rp_begin();   /* a pending clear still has to happen */
+    if (!RP.open && RP.clr && RP.tf) rp_begin();
     if (RP.open) {
-        if (g_vq_act) { vkCmdEndQuery(CS->cmd, g_vq_pool, g_vq_idx); g_vq_act = 0; }   /* v1.1.3: a query lives inside one render pass */
-        vkCmdEndRenderPass(CS->cmd); RP.open = 0;
+        if (RP.secondary) sec_flush();
+        if (g_vq_act) { vkCmdEndQuery(CS->cmd, g_vq_pool, g_vq_idx); g_vq_act = 0; }
+        if (RP.open) { vkCmdEndRenderPass(CS->cmd); RP.open = 0; }
+        RP.secondary = 0;
     }
 }
 /* the device's render targets; 0: nothing to draw into, else 1 | 2 (depth attached) | 4 (stencil bits) */
@@ -1016,11 +1167,46 @@ static VkStencilOpState vstencil(uint32_t s) {
     st.compareOp = vcmp(s & 15); st.failOp = vsop(s >> 4 & 15); st.depthFailOp = vsop(s >> 8 & 15); st.passOp = vsop(s >> 12 & 15);
     st.compareMask = st.writeMask = 0xFF; return st;
 }
-static VkPipeline pipe_get(VProg* P, const PKey* k) {
+/* v1.2.3: experimental overlap of a single pipeline creation with independent UBO work.
+ * The submitting draw always waits: no speculative pipeline and no missing draws. Only the
+ * caller touches the cache/render-pass lists; the worker uses stack-backed create info until
+ * the caller joins the task. PIPEIDLE forces the original serial path for fragile drivers. */
+typedef struct { VkDevice dev; VkPipelineCache cache; const VkGraphicsPipelineCreateInfo* info; VkPipeline pipe; VkResult result; } VPipeTask;
+static struct { pthread_mutex_t mx; pthread_cond_t go, done; pthread_t thread; VPipeTask* task; int tried, available, complete; }
+    g_vpa = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, PTHREAD_COND_INITIALIZER };
+static uint64_t g_vpa_jobs, g_vpa_wide;
+static double g_vpa_work_s, g_vpa_wait_s;
+static void* vpipe_worker(void* unused) {
+    (void)unused; pthread_setname_np(pthread_self(), "me1-vkpipe");
+    for (;;) {
+        pthread_mutex_lock(&g_vpa.mx);
+        while (!g_vpa.task) pthread_cond_wait(&g_vpa.go, &g_vpa.mx);
+        VPipeTask* t = g_vpa.task; pthread_mutex_unlock(&g_vpa.mx);
+        t->result = vkCreateGraphicsPipelines(t->dev, t->cache, 1, t->info, NULL, &t->pipe);
+        pthread_mutex_lock(&g_vpa.mx); g_vpa.task = NULL; g_vpa.complete = 1;
+        pthread_cond_signal(&g_vpa.done); pthread_mutex_unlock(&g_vpa.mx);
+    }
+    return NULL;
+}
+static int vpipe_async_enabled(void) {
+    const char* e = getenv("ME1_VK_ASYNC_PIPE");
+    if (!e || (strcmp(e, "1") && strcmp(e, "2")) || g_pipeidle) return 0;
+    if (!g_vpa.tried) {
+        g_vpa.tried = 1; pthread_attr_t a; pthread_attr_init(&a);
+        pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+        if (!pthread_create(&g_vpa.thread, &a, vpipe_worker, NULL)) {
+            g_vpa.available = 1; vlog("experimental async pipeline worker enabled\n");
+        } else vlog("async pipeline worker unavailable; using serial creation\n");
+        pthread_attr_destroy(&a);
+    }
+    return g_vpa.available;
+}
+static VkPipeline pipe_get(VProg* P, const PKey* k, void (*work)(void*), void* arg, int wide) {
     if (g_vklost) return VK_NULL_HANDLE;   /* v0.10.12 (P0-6) */
     uint64_t h = fnv(0xcbf29ce484222325ull, k, sizeof *k);
     VPipe** bucket = &g_vpipe[h & (NPH - 1)];
-    for (VPipe* p = *bucket; p; p = p->next) if (p->h == h && !memcmp(&p->k, k, sizeof *k)) { p->use = g_vserial; return p->p; }
+    for (VPipe* p = *bucket; p; p = p->next) if (p->h == h && !memcmp(&p->k, k, sizeof *k)) { p->use = g_vserial; g_pc_hits++; if (p->p) work(arg); return p->p; }
+    g_pc_misses++;
     double t0 = mono();
     VkPipelineShaderStageCreateInfo st[2]; memset(st, 0, sizeof st);
     for (int i = 0; i < 2; i++) { st[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; st[i].stage = i ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT;
@@ -1063,8 +1249,24 @@ static VkPipeline pipe_get(VProg* P, const PKey* k) {
     pi.pViewportState = &vps; pi.pRasterizationState = &rs; pi.pMultisampleState = &ms; pi.pDepthStencilState = rc->df ? &ds : NULL;
     pi.pColorBlendState = &cbs; pi.pDynamicState = &dy; pi.layout = g_pl; pi.renderPass = rpc_get(k->rpc, 0); pi.subpass = 0; pi.basePipelineIndex = -1;
     VkPipeline p = VK_NULL_HANDLE;
-    if (g_pipeidle) vkDeviceWaitIdle(VD);   /* v0.10.4: Mali DEVICE_LOST happens with new pipelines created mid-flight */
-    if (!vok(vkCreateGraphicsPipelines(VD, g_vpc, 1, &pi, NULL, &p), "vkCreateGraphicsPipelines")) p = VK_NULL_HANDLE;
+    VkResult pr;
+    if (vpipe_async_enabled()) {
+        if (wide) { static int noted; if (!noted++) vlog("async pipeline: wide draw preparation enabled\n"); }
+        VPipeTask t = { VD, g_vpc, &pi, VK_NULL_HANDLE, VK_ERROR_UNKNOWN };
+        pthread_mutex_lock(&g_vpa.mx); g_vpa.complete = 0; g_vpa.task = &t;
+        pthread_cond_signal(&g_vpa.go); pthread_mutex_unlock(&g_vpa.mx);
+        double w0 = mono(); work(arg); double w1 = mono();
+        pthread_mutex_lock(&g_vpa.mx);
+        while (!g_vpa.complete) pthread_cond_wait(&g_vpa.done, &g_vpa.mx);
+        pthread_mutex_unlock(&g_vpa.mx);
+        g_vpa_jobs++; g_vpa_wide += wide != 0; g_vpa_work_s += w1 - w0; g_vpa_wait_s += mono() - w1;
+        p = t.pipe; pr = t.result;
+    } else {
+        if (g_pipeidle) vkDeviceWaitIdle(VD);   /* retain Mali workaround */
+        pr = vkCreateGraphicsPipelines(VD, g_vpc, 1, &pi, NULL, &p);
+        if (pr >= 0 && p) work(arg);
+    }
+    if (!vok(pr, "vkCreateGraphicsPipelines")) p = VK_NULL_HANDLE;
     VPipe* e = calloc(1, sizeof *e); e->h = h; e->k = *k; e->p = p; e->use = g_vserial; e->next = *bucket; *bucket = e; e->pnext = P->pipes; P->pipes = e;
     g_npipes++; g_vpc_new++;
     double dt = mono() - t0;
@@ -1189,6 +1391,7 @@ static VkDeviceSize ring_used(const Ring* r) { VkDeviceSize n = 0; for (int i = 
 static void vb_submit(int32_t idx, int wait, int eof) {
     VSlot* s = CS;
     rp_end();
+    if (g_vklost) return;
     if (s->qon) vkCmdWriteTimestamp(s->cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s->qp, 1);
     vkEndCommandBuffer(s->cmd);
     /* v0.10.12 (P0-0): the final submit carries only [up?, cmd]; earlier chunks were already submitted once by
@@ -1200,7 +1403,12 @@ static void vb_submit(int32_t idx, int wait, int eof) {
     VkSubmitInfo si; memset(&si, 0, sizeof si); si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     if (idx >= 0) { si.waitSemaphoreCount = 1; si.pWaitSemaphores = &s->acq; si.pWaitDstStageMask = &ws; si.signalSemaphoreCount = 1; si.pSignalSemaphores = &VW.rs[idx]; }
     si.commandBufferCount = n; si.pCommandBuffers = cbs;
-    VkResult r = g_vklost ? VK_ERROR_DEVICE_LOST : vkQueueSubmit(VQ, 1, &si, s->fence);
+    /* Test-only: simulate a failed frame submission without calling the driver. */
+    static int fake_submit_fired;
+    const char* fs = getenv("ME1_VK_FAKELOST_SUBMIT");
+    int inject = eof && !fake_submit_fired && fs && *fs && g_pframes == (uint64_t)strtoull(fs, NULL, 10);
+    if (inject) fake_submit_fired = 1;
+    VkResult r = inject || g_vklost ? VK_ERROR_DEVICE_LOST : vkQueueSubmit(VQ, 1, &si, s->fence);
     s->serial = g_vserial; s->eof = eof; VT.subs++;
     s->pending = g_vklost ? 0 : vok(r, "vkQueueSubmit");
     s->ost = s->pending ? 1 : 3;
@@ -1208,7 +1416,7 @@ static void vb_submit(int32_t idx, int wait, int eof) {
         if (!g_vklost) vkDeviceWaitIdle(VD);
         if (s->serial > g_vdone) g_vdone = s->serial;
         s->rbpend = 0; s->qon = 0;
-        if (idx >= 0) { vkDestroySemaphore(VD, s->acq, NULL); VkSemaphoreCreateInfo sc = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, NULL, 0 }; vkCreateSemaphore(VD, &sc, NULL, &s->acq); VW.recreate = 1; }
+        if (idx >= 0 && !g_vklost) { vkDestroySemaphore(VD, s->acq, NULL); VkSemaphoreCreateInfo sc = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, NULL, 0 }; vkCreateSemaphore(VD, &sc, NULL, &s->acq); VW.recreate = 1; }
     } else if (idx >= 0) {
         uint32_t ui = (uint32_t)idx;
         VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, NULL, 1, &VW.rs[idx], 1, &VW.sc, &ui, NULL };
@@ -1219,11 +1427,13 @@ static void vb_submit(int32_t idx, int wait, int eof) {
         else if (pr == VK_ERROR_SURFACE_LOST_KHR) VW.lost = 1;
         else if (pr != VK_SUCCESS) vok(pr, "vkQueuePresentKHR");
     }
+    if (g_vklost) return;   /* do not touch pools or semaphores of a lost device */
     g_vserial++;
     VSlot* done = s;
     g_si = (g_si + 1) % NSLOT;
     slot_begin();
-    if (wait && done->pending) { vok(vkWaitForFences(VD, 1, &done->fence, VK_TRUE, UINT64_MAX), "vkWaitForFences"); slot_finish(done); }
+    if (g_vklost) return;
+    if (wait && done->pending && vok(vkWaitForFences(VD, 1, &done->fence, VK_TRUE, UINT64_MAX), "vkWaitForFences")) slot_finish(done);
 }
 /* a long frame without Present (loading): submit what is recorded so that staging memory gets recycled */
 static void vb_maybe_flush(void) { if (ring_used(&CS->stg) > (48u << 20) || ring_used(&CS->vtx) > (32u << 20)) vb_submit(-1, 0, 0); }
@@ -1437,6 +1647,7 @@ static int vq_data(Obj* o, uint32_t flags, uint32_t* out) {
         if (g_vq_flush >= 8) { q_done(q, q_visible(q), 0); *out = q->res; return 1; }
         g_vq_flush++; g_qs.flushes++;
         vb_submit(-1, 0, 0);
+        if (g_vklost) { q_done(q, q_visible(q), 0); *out = q->res; return 1; }
     }
     if (s->ost == 1 && s->pending) {
         double t = mono();
@@ -1468,6 +1679,87 @@ static int vq_available(Obj* o) {
     else q_done(q, !v ? 0 : !VX.oprec ? q_area(q) : v > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)v, 1);
     return 1;
 }
+typedef struct { Dev* d; GlSh *vs, *ps; VLay* layout; const uint32_t* rs; int rhw, srgb, vx, vy, vw, vh, ok, prof; double elapsed; } VUniformJob;
+static void v_uniform_prepare(void* arg) {
+    VUniformJob* j = arg; double ut = j->prof ? mono() : 0; Dev* d = j->d; GlSh* vs = j->vs; GlSh* ps = j->ps; VLay L = *j->layout;
+    const uint32_t* rs = j->rs; int rhw=j->rhw, srgb=j->srgb, vx=j->vx, vy=j->vy, vw=j->vw, vh=j->vh;
+    /* uniform blocks: re-written when constants or the shader change, both halves in one ring chunk */
+    float fix[8] = { 1.f / (float)vw, 1.f / (float)vh, -1.f, 0.f, 0, 0, 0, 0 };
+    if (rhw) { GS.rhw++; fix[4] = (float)vx; fix[5] = (float)vy; fix[6] = 2.f / (float)vw; fix[7] = 2.f / (float)vh; }
+    float at[2] = { rs[15] ? (float)(rs[25] & 15) : 0.f, (float)(rs[24] & 255) / 255.f };
+    int sw = rs[194] != 0;
+    int need[2];
+    need[0] = !VB.uvalid || VB.vser != vs->serial || VB.vcver != d->cver[0] || memcmp(VB.vfix, fix, sizeof fix) || VB.vbgra != L.bgra;
+    need[1] = !VB.uvalid || VB.pser != ps->serial || VB.pcver != d->cver[1] || VB.pat[0] != at[0] || VB.pat[1] != at[1] || VB.psrgb != srgb || VB.psrgbw != sw;
+    for (int it2 = 0; it2 < 4 && (need[0] | need[1]); it2++) for (int h = 0; h < 2; h++) {
+        if (!need[h]) continue;
+        const Sm3* s = h ? &ps->s : &vs->s;
+        VkDeviceSize n = (h ? 288 : 304) + (VkDeviceSize)(s->nconst > 0 ? s->nconst : 1) * 16;
+        VkBuffer b; VkDeviceSize o; VkDescriptorSet st;
+        uint8_t* p = ring_alloc(&CS->ubo, n, VX.uboalign, &b, &o, &st);
+        if (!p || !st) { VB.uvalid = 0; return; }
+        int32_t iv[4] = { 0, 0, 0, 0 };
+        if (!h) {
+            memcpy(p, fix, 32);
+            int mb = 0; for (int q = 0; q < 16; q++) if (d->vsb[q]) mb |= 1 << q;
+            iv[0] = L.bgra; iv[1] = mb; memcpy(p + 32, iv, 16); memcpy(p + 48, d->vsi, 256);
+            if (s->nconst) consts_fill((float (*)[4])(p + 304), s, (const float (*)[4])d->vsf);
+            VB.vser = vs->serial; VB.vcver = d->cver[0]; memcpy(VB.vfix, fix, sizeof fix); VB.vbgra = L.bgra;
+        } else {
+            float a4[4] = { at[0], at[1], 0.f, 0.f }; memcpy(p, a4, 16);
+            int mb = 0; for (int q = 0; q < 16; q++) if (d->psb[q]) mb |= 1 << q;
+            iv[0] = srgb; iv[1] = sw; iv[2] = mb; memcpy(p + 16, iv, 16); memcpy(p + 32, d->psi, 256);
+            if (s->nconst) consts_fill((float (*)[4])(p + 288), s, (const float (*)[4])d->psf);
+            VB.pser = ps->serial; VB.pcver = d->cver[1]; VB.pat[0] = at[0]; VB.pat[1] = at[1]; VB.psrgb = srgb; VB.psrgbw = sw;
+        }
+        VB.ofs[h] = (uint32_t)o; need[h] = 0;
+        if (b != VB.ubuf) { VB.ubuf = b; VB.uset = st; need[1 - h] = 1; }
+    }
+    VB.uvalid = 1;
+    j->ok = 1; if (j->prof) j->elapsed = mono() - ut;
+}
+/* Mode 2 overlaps real work for this same draw with pipeline creation. The
+ * render-pass class and shader modules are fixed before dispatch. The draw
+ * waits before issuing the draw or releasing objects used by the worker. */
+typedef struct {
+    Dev* d; DrawCall* dc; GlSh *vs, *ps; VLay* layout;
+    VkBuffer ib; VkDeviceSize ibo; uint32_t first; VkIndexType it;
+    VkDescriptorSet tset; int srgb, ok, prof; double vert_time, tex_time;
+    VUniformJob* uniform;
+} VDrawPrep;
+static void v_draw_data_prepare(VDrawPrep* j) {
+    Dev* d = j->d; DrawCall* dc = j->dc; VLay L = *j->layout;
+    VkBuffer ib = VK_NULL_HANDLE; VkDeviceSize ibo = 0; uint32_t first = (uint32_t)L.first; VkIndexType it = VK_INDEX_TYPE_UINT16;
+    double t = j->prof ? mono() : 0;
+    if (dc->indexed) {
+        uint32_t ifmt = dc->up ? dc->upifmt : d->ib->fmt, isz = ifmt == 102 ? 4 : 2;
+        it = isz == 4 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
+        uint64_t len = (uint64_t)dc->count * isz; uint32_t src = 0;
+        first = 0;
+        if (dc->up) src = dc->upi;
+        else {
+            Obj* io = d->ib; uint64_t a = (uint64_t)dc->start * isz;
+            if (a + len > io->size) { return; }
+            VRes* g = io->shadow ? NULL : vbuf(io);
+            if (g && g->kind == 3) { ib = g->buf; ibo = 0; first = dc->start; g->use = g_vserial; }
+            else if (io->shadow) src = d->ibsh + (uint32_t)a;
+            else { return; }
+        }
+        if (!ib) { uint8_t* p = ring_alloc(&CS->vtx, len, 16, &ib, &ibo, NULL); if (!p) { return; } memcpy(p, M + src, (size_t)len); GS.ring += len; }
+    }
+    j->ib = ib; j->ibo = ibo; j->first = first; j->it = it;
+    if (j->prof) { double now = mono(); j->vert_time = now - t; t = now; }
+    int srgb = 0;
+    j->tset = vtex_bind(d, &j->vs->s, &j->ps->s, &srgb);
+    j->srgb = srgb;
+    if (j->prof) j->tex_time = mono() - t;
+    if (!g_vklost) j->ok = 1;
+}
+static void v_draw_wide_prepare(void* arg) {
+    VDrawPrep* j = arg;
+    v_draw_data_prepare(j);
+    if (j->ok) { j->uniform->srgb = j->srgb; v_uniform_prepare(j->uniform); }
+}
 static void vb_draw(Dev* d, DrawCall* dc) {
     if (g_vklost) return;
     dc->count = prim_verts(dc->pt, dc->prims);
@@ -1476,7 +1768,7 @@ static void vb_draw(Dev* d, DrawCall* dc) {
     Obj* vso = rhw ? rhw_vs() : d->vs;
     if (!vso || !d->ps || !vso->gx || !d->ps->gx) { GS.skipped++; return; }
     GlSh* vs = vso->gx; GlSh* ps = d->ps->gx;
-    int prof = (g_gp.n = g_gp.n + 1, (g_gp.n & 15) == 0);   /* v0.10.2, see hle_d3d9_gl.h */
+    int prof = (g_gp.n = g_gp.n + 1, (g_gp.n & 15) == 1); g_gp.nprof += prof;   /* v0.10.2, see hle_d3d9_gl.h */
     double tp = prof ? mono() : 0;
 #define GP_MARK(st) do { if (prof) { double tn = mono(); g_gp.ns[st] += (uint64_t)((tn - tp) * 1e9); tp = tn; } } while (0)
     if (!vs->done) gl_shader_ready(vso);
@@ -1493,29 +1785,16 @@ static void vb_draw(Dev* d, DrawCall* dc) {
     VProg* P = vprog_get(vso, d->ps, L.im, L.sm);
     if (!P || !P->ok) { GS.skipped++; return; }
     GP_MARK(GP_PROG);
-    /* index data */
-    VkBuffer ib = VK_NULL_HANDLE; VkDeviceSize ibo = 0; uint32_t first = (uint32_t)L.first; VkIndexType it = VK_INDEX_TYPE_UINT16;
-    if (dc->indexed) {
-        uint32_t ifmt = dc->up ? dc->upifmt : d->ib->fmt, isz = ifmt == 102 ? 4 : 2;
-        it = isz == 4 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
-        uint64_t len = (uint64_t)dc->count * isz; uint32_t src = 0;
-        first = 0;
-        if (dc->up) src = dc->upi;
-        else {
-            Obj* io = d->ib; uint64_t a = (uint64_t)dc->start * isz;
-            if (a + len > io->size) { GS.skipped++; return; }
-            VRes* g = io->shadow ? NULL : vbuf(io);
-            if (g && g->kind == 3) { ib = g->buf; ibo = 0; first = dc->start; g->use = g_vserial; }
-            else if (io->shadow) src = d->ibsh + (uint32_t)a;
-            else { GS.skipped++; return; }
-        }
-        if (!ib) { uint8_t* p = ring_alloc(&CS->vtx, len, 16, &ib, &ibo, NULL); if (!p) { GS.skipped++; return; } memcpy(p, M + src, (size_t)len); GS.ring += len; }
+    static int wide_opt = -1;
+    if (wide_opt < 0) { const char* e = getenv("ME1_VK_ASYNC_PIPE"); wide_opt = e && !strcmp(e, "2"); }
+    int wide = wide_opt && !g_pipeidle && (g_vpa.available || vpipe_async_enabled());
+    VDrawPrep prep = {0}; prep.d = d; prep.dc = dc; prep.vs = vs; prep.ps = ps; prep.layout = &L; prep.prof = prof;
+    if (!wide) {
+        v_draw_data_prepare(&prep);
+        if (!prep.ok) { GS.skipped++; return; }
+        if (prof) { g_gp.ns[GP_VERT] += (uint64_t)(prep.vert_time * 1e9);
+                    g_gp.ns[GP_TEX] += (uint64_t)(prep.tex_time * 1e9); tp = mono(); }
     }
-    /* textures (layout changes end the render pass) */
-    GP_MARK(GP_VERT);
-    int srgb = 0;
-    VkDescriptorSet tset = vtex_bind(d, &vs->s, &ps->s, &srgb);
-    GP_MARK(GP_TEX);
     /* pipeline */
     const uint32_t* rs = d->rs;
     PKey k; memset(&k, 0, sizeof k);
@@ -1539,50 +1818,43 @@ static void vb_draw(Dev* d, DrawCall* dc) {
     k.dbias = hasds && (bias != 0.f || slope != 0.f);
     k.nattr = (uint8_t)L.na; for (int i = 0; i < L.na; i++) { k.a[i].loc = L.a[i].loc; k.a[i].bind = L.a[i].bind; k.a[i].off = L.a[i].off; k.a[i].fmt = L.a[i].fmt; }
     k.nbind = (uint8_t)L.nb; for (int i = 0; i < L.nb; i++) { k.b[i].stride = L.b[i].stride; k.b[i].inst = L.b[i].inst; }
-    VkPipeline pipe = pipe_get(P, &k);
-    if (!pipe) { GS.skipped++; return; }
-    GP_MARK(GP_STATE);
     /* viewport */
     int vx = (int)d->vp[0], vy = (int)d->vp[1], vw = (int)d->vp[2], vh = (int)d->vp[3];
     if (vw <= 0) vw = 1;
     if (vh <= 0) vh = 1;
     float z0 = bitsf(d->vp[4]), z1 = bitsf(d->vp[5]);
     z0 = z0 < 0.f ? 0.f : z0 > 1.f ? 1.f : z0; z1 = z1 < 0.f ? 0.f : z1 > 1.f ? 1.f : z1;
-    /* uniform blocks: re-written when constants or the shader change, both halves in one ring chunk */
-    float fix[8] = { 1.f / (float)vw, 1.f / (float)vh, -1.f, 0.f, 0, 0, 0, 0 };
-    if (rhw) { GS.rhw++; fix[4] = (float)vx; fix[5] = (float)vy; fix[6] = 2.f / (float)vw; fix[7] = 2.f / (float)vh; }
-    float at[2] = { rs[15] ? (float)(rs[25] & 15) : 0.f, (float)(rs[24] & 255) / 255.f };
-    int sw = rs[194] != 0;
-    int need[2];
-    need[0] = !VB.uvalid || VB.vser != vs->serial || VB.vcver != d->cver[0] || memcmp(VB.vfix, fix, sizeof fix) || VB.vbgra != L.bgra;
-    need[1] = !VB.uvalid || VB.pser != ps->serial || VB.pcver != d->cver[1] || VB.pat[0] != at[0] || VB.pat[1] != at[1] || VB.psrgb != srgb || VB.psrgbw != sw;
-    for (int it2 = 0; it2 < 4 && (need[0] | need[1]); it2++) for (int h = 0; h < 2; h++) {
-        if (!need[h]) continue;
-        const Sm3* s = h ? &ps->s : &vs->s;
-        VkDeviceSize n = (h ? 288 : 304) + (VkDeviceSize)(s->nconst > 0 ? s->nconst : 1) * 16;
-        VkBuffer b; VkDeviceSize o; VkDescriptorSet st;
-        uint8_t* p = ring_alloc(&CS->ubo, n, VX.uboalign, &b, &o, &st);
-        if (!p || !st) { GS.skipped++; return; }
-        int32_t iv[4] = { 0, 0, 0, 0 };
-        if (!h) {
-            memcpy(p, fix, 32);
-            int mb = 0; for (int q = 0; q < 16; q++) if (d->vsb[q]) mb |= 1 << q;
-            iv[0] = L.bgra; iv[1] = mb; memcpy(p + 32, iv, 16); memcpy(p + 48, d->vsi, 256);
-            if (s->nconst) consts_fill((float (*)[4])(p + 304), s, (const float (*)[4])d->vsf);
-            VB.vser = vs->serial; VB.vcver = d->cver[0]; memcpy(VB.vfix, fix, sizeof fix); VB.vbgra = L.bgra;
-        } else {
-            float a4[4] = { at[0], at[1], 0.f, 0.f }; memcpy(p, a4, 16);
-            int mb = 0; for (int q = 0; q < 16; q++) if (d->psb[q]) mb |= 1 << q;
-            iv[0] = srgb; iv[1] = sw; iv[2] = mb; memcpy(p + 16, iv, 16); memcpy(p + 32, d->psi, 256);
-            if (s->nconst) consts_fill((float (*)[4])(p + 288), s, (const float (*)[4])d->psf);
-            VB.pser = ps->serial; VB.pcver = d->cver[1]; VB.pat[0] = at[0]; VB.pat[1] = at[1]; VB.psrgb = srgb; VB.psrgbw = sw;
-        }
-        VB.ofs[h] = (uint32_t)o; need[h] = 0;
-        if (b != VB.ubuf) { VB.ubuf = b; VB.uset = st; need[1 - h] = 1; }
-    }
-    VB.uvalid = 1;
-    GP_MARK(GP_CONST);
-    /* record */
+    VUniformJob uj = { d, vs, ps, &L, rs, rhw, prep.srgb, vx, vy, vw, vh, 0, prof, 0 };
+    prep.uniform = &uj;
+    VkPipeline pipe = pipe_get(P, &k, wide ? v_draw_wide_prepare : v_uniform_prepare, wide ? (void*)&prep : (void*)&uj, wide);
+    if (!pipe || !prep.ok || !uj.ok || g_vklost) { VB.uvalid = 0; GS.skipped++; return; }
+    if (prof) { double tn = mono(), all = tn - tp;
+        double v = wide ? prep.vert_time : 0, t = wide ? prep.tex_time : 0, u = uj.elapsed;
+        if (v + t + u > all) { double factor = all / (v + t + u); v *= factor; t *= factor; u *= factor; }
+        g_gp.ns[GP_VERT] += (uint64_t)(v * 1e9); g_gp.ns[GP_TEX] += (uint64_t)(t * 1e9);
+        g_gp.ns[GP_CONST] += (uint64_t)(u * 1e9); g_gp.ns[GP_STATE] += (uint64_t)((all - v - t - u) * 1e9); tp = tn; }
+    VkBuffer ib = prep.ib; VkDeviceSize ibo = prep.ibo; uint32_t first = prep.first;
+    VkIndexType it = prep.it; VkDescriptorSet tset = prep.tset;
+    /* Record immutable state for secondary buffers, or complete state inline
+     * while an occlusion query is open. The normal path stays unchanged. */
+    if (g_sec_on) {
+        if (tset) g_sec_last_tex = tset;
+        VSecDraw d0; memset(&d0, 0, sizeof d0);
+        d0.pipe = pipe; d0.ubo = VB.uset; d0.tex = g_sec_last_tex; d0.uoff[0] = VB.ofs[0]; d0.uoff[1] = VB.ofs[1];
+        d0.nb = (uint32_t)L.nb; for (int i = 0; i < L.nb; i++) { d0.vb[i] = L.b[i].buf; d0.vo[i] = L.b[i].off; }
+        d0.ib = ib; d0.io = ibo; d0.it = it; d0.vp = (VkViewport){ (float)vx, (float)vy, (float)vw, (float)vh, z0, z1 };
+        int sc[4] = { 0, 0, (int)RP.w, (int)RP.h };
+        if (rs[174]) rect_and(sc, (int)d->scissor[0], (int)d->scissor[1], (int)d->scissor[2], (int)d->scissor[3]);
+        d0.sc = (VkRect2D){ { sc[0], sc[1] }, { sc[2] > sc[0] ? (uint32_t)(sc[2] - sc[0]) : 0, sc[3] > sc[1] ? (uint32_t)(sc[3] - sc[1]) : 0 } };
+        d0.bias = bias; d0.slope = slope; uint32_t bc = rs[193];
+        d0.bc[0] = (bc >> 16 & 255) / 255.f; d0.bc[1] = (bc >> 8 & 255) / 255.f; d0.bc[2] = (bc & 255) / 255.f; d0.bc[3] = (bc >> 24) / 255.f;
+        d0.ref = rs[57] & 255; d0.mask = rs[58] & 255; d0.wmask = rs[59] & 255;
+        d0.indexed = dc->indexed; d0.count = dc->count; d0.instances = dc->ninst > 1 ? dc->ninst : 1; d0.first = first; d0.voff = L.voff;
+        rp_begin_mode(g_qopen ? 0 : 1);
+        if (g_qopen) { vq_draw(); sec_encode(CS->cmd, &d0); }
+        else if (g_sec_on && RP.secondary) { g_secd[g_secn++] = d0; if (g_secn == SEC_BATCH) sec_flush(); }
+        else { sec_encode(CS->cmd, &d0); sec_invalidate_bindings(); }
+    } else {
     rp_begin();
     VkCommandBuffer cb = CS->cmd;
     if (VB.pipe != pipe) { vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe); VB.pipe = pipe; }
@@ -1616,6 +1888,8 @@ static void vb_draw(Dev* d, DrawCall* dc) {
     if (g_qopen) vq_draw();   /* v1.1.3: inside an occlusion query */
     if (!dc->indexed) vkCmdDraw(cb, dc->count, ni, first, 0);
     else vkCmdDrawIndexed(cb, dc->count, ni, first, L.voff, 0);
+    }
+    uint32_t ni = dc->ninst > 1 ? dc->ninst : 1;
     GP_MARK(GP_DRAW);
 #undef GP_MARK
     GS.draws++;
@@ -1772,6 +2046,7 @@ static const uint8_t* vread_raw(const Att* a, uint32_t x, uint32_t y, uint32_t w
     host_barrier(cb);
     a->r->use = a->r->mainuse = g_vserial;
     vb_submit(-1, 1, 0);
+    if (g_vklost) return NULL;
     vmem_invalidate(&g_rbkm);
     return vmem_ptr(&g_rbkm);
 }
@@ -1988,7 +2263,9 @@ static int vswap_acquire(uint32_t* idx) {
 static void vcpu_post(VSlot* s) {
     if (!VW.cpu || !VW.win || VW.ww <= 0 || VW.wh <= 0 || !s->rb) return;
     int fw = s->rbw, fh = s->rbh, bw = fw, bh = fh, ww = VW.ww, wh = VW.wh;
-    if ((int64_t)ww * fh > (int64_t)wh * fw) bw = (int)(((int64_t)fh * ww + wh / 2) / wh); else bh = (int)(((int64_t)fw * wh + ww / 2) / ww);
+    if (g_stretch == 1) { bw = ww; bh = wh; } /* stretch */
+    else if (g_stretch == 2) { if ((int64_t)ww * fh > (int64_t)wh * fw) bw = (int)(((int64_t)fh * ww + wh / 2) / wh); else bh = (int)(((int64_t)fw * wh + ww / 2) / ww); }
+    else { if ((int64_t)ww * fh > (int64_t)wh * fw) bw = (int)(((int64_t)fh * ww + wh / 2) / wh); else bh = (int)(((int64_t)fw * wh + ww / 2) / ww); }
     bw = (bw + 1) & ~1; if (bw < fw) bw = fw; if (bh < fh) bh = fh;
     if (bw != VW.gw || bh != VW.gh) { g_anw.geom(VW.win, bw, bh, 2 /* WINDOW_FORMAT_RGBX_8888 */); VW.gw = bw; VW.gh = bh; }
     pthread_mutex_lock(&g_pmx); set_view(ww, wh, fw, fh); pthread_mutex_unlock(&g_pmx);
@@ -2021,6 +2298,7 @@ static void vpc_save(void);
  * behaviour (black screen). If the game does not Reset within 5 s, present() recovers on its own. */
 static int vb_init(void);
 static void vb_teardown(void);
+static void vb_free(Obj* o);
 static int g_nrecover; static double g_recover_t0 = -1; static uint64_t g_recover_frame;
 static int vk_recover_max(void) {   /* v0.10.12 (P0-2): Mali gets one in-process attempt, others four */
     const char* e = getenv("ME1_VK_RECOVER_MAX"); if (e && *e) return atoi(e);
@@ -2052,6 +2330,8 @@ static int vk_device_reset(void) {
         return 0;
     }
     int lost = g_vklost;
+    if (lost) { g_secn = 0; memset(&RP, 0, sizeof RP); g_vq_act = 0; }
+    else rp_end();  /* flush before destroying snapshotted resources */
     unsigned freed = 0;
     vlog("DEVICE LOST recovery #%d: re-creating the device and all renderer resources (vkmem %llu MB)\n",
          g_nrecover + 1, (unsigned long long)(g_vkmem >> 20));
@@ -2059,8 +2339,12 @@ static int vk_device_reset(void) {
     memset(g_vpipe, 0, sizeof g_vpipe); g_npipes = 0;
     for (int i = 0; i < g_nobj; i++) {
         Obj* o = g_obj[i];
-        if (o && o->gx && o->type >= T_TEX) { gl_free(o); freed++; }   /* images/buffers/shaders: re-created from guest copies */
+        if (!o || !o->gx || o->type < T_TEX) continue;
+        if (o->type == T_QUERY) { QRes* q = o->gx; if (q->st == 1 || q->st == 2) q_done(q, q_visible(q), 0); continue; }
+        if (o->type == T_VS || o->type == T_PS) continue;  /* translation is CPU-only; GPU programs were discarded */
+        vb_free(o); freed++;   /* not gl_free: the GLES header macro maps that name to gles_free here */
     }
+    g_qopen = NULL; g_qpend_n = 0; g_vq_act = 0;
     g_ndead = 0;   /* the old device is gone - its handles are gone with it */
     memset(g_tcache, 0, sizeof g_tcache);
     memset(g_vsmp, 0, sizeof g_vsmp); g_nvsmp = 0; g_vsmp_near = VK_NULL_HANDLE;
@@ -2084,7 +2368,7 @@ static int vk_device_reset(void) {
          * The old instance/device/swapchain/memory are leaked deliberately; a fresh instance is created below. */
         vlog("the lost device is leaked (destroying it crashes the driver); %u resources freed\n", freed);
         VI = VK_NULL_HANDLE; VP = VK_NULL_HANDLE; VD = VK_NULL_HANDLE; VQ = VK_NULL_HANDLE; g_vkdbg = VK_NULL_HANDLE;
-        memset(S, 0, sizeof S);
+        sec_free_hosts(); memset(S, 0, sizeof S); g_secn = 0; g_sec_on = 0; g_sec_fail_test = 0; g_sec_last_tex = VK_NULL_HANDLE;
         g_mb = NULL; g_nmb = g_cmb = 0;   /* host allocations of the dead device: leaked with it */
         g_vpc = VK_NULL_HANDLE;
         memset(VW.rs, 0, sizeof VW.rs); memset(VW.img, 0, sizeof VW.img); VW.n = 0;   /* old-device handles: only forget */
@@ -2098,11 +2382,13 @@ static int vk_device_reset(void) {
     VW.sc = VK_NULL_HANDLE; VW.surf = VK_NULL_HANDLE;
     VW.cpu = 0; VW.failed = 0; VW.lost = 0; VW.recreate = 1;
     g_nrecover++;
+    GS.texmem = 0;   /* old-device accounting includes dummy images; the new init accounts its own */
     if (!vb_init()) { g_vklost = 1; vlog("recovery failed - black screen (ME1_VK_LOSTRESET=0 disables this flow)\n");
         if (hle_toast_hook) hle_toast_hook("Видеодрайвер упал повторно — черный экран. Смените GPU-драйвер в лаунчере (обычно помогает системный GLES).");
         return 0; }
+    /* Reapply the live window to the new instance, even when its pointer did not change. */
+    pthread_mutex_lock(&g_pmx); g_win_gen++; pthread_mutex_unlock(&g_pmx);
     g_recover_frame = g_st.frames;
-    GS.texmem = 0;   /* (P0-8/P2-2) after the gl_free sweep it must be ~0; a non-zero value is an accounting leak */
     vlog("recovery complete - rendering continues (frame %llu, skipped draws now %llu)\n", (unsigned long long)g_st.frames, (unsigned long long)GS.skipped);
     return 1;
 }
@@ -2111,17 +2397,17 @@ static void vb_present(Obj* bb) {
     if (!bb) return;
     {   /* v0.10.12 (P2-6): reproducible DEVICE_LOST for tests - ME1_VK_FAKELOST=<present frame> */
         const char* fl = getenv("ME1_VK_FAKELOST");
-        if (fl && *fl && g_pframes + 1 == (uint64_t)strtoull(fl, NULL, 10)) vok(VK_ERROR_DEVICE_LOST, "ME1_VK_FAKELOST");
+        static int fired;
+        if (!fired && fl && *fl && g_pframes + 1 == (uint64_t)strtoull(fl, NULL, 10)) { fired = 1; vok(VK_ERROR_DEVICE_LOST, "ME1_VK_FAKELOST"); }
     }
+    /* Recovery runs on the caller's Reset or timeout Present, not midway through
+     * this callback: an Att acquired from the old device cannot survive reset. */
+    if (g_vklost) return;
     vwin_apply();
     Att a; if (!att_of(bb, &a) || a.r->kind != 1) return;
     uint32_t w, h; att_size(&a, &w, &h);
     g_pframes++; g_vq_flush = 0;
     if (g_fdump && (g_pframes == 1 || g_pframes % (uint64_t)g_dumpevery == 0)) vdump(&a, w, h);
-    if (g_vklost && g_lostreset_ok) {   /* v0.10.7 flow, v0.10.11: only with ME1_VK_LOSTRESET=1 (rollback default: off) */
-        if (g_d3dlost && mono() - g_d3dlostt < 5.0) return;
-        if (!vk_device_reset()) return;
-    }
     rp_end();
     VSlot* s = CS; VkCommandBuffer cb = s->cmd; int32_t idx = -1;
     if (VW.cpu) {
@@ -2174,11 +2460,12 @@ static void vb_present(Obj* bb) {
         }
     }
     vb_submit(idx, 0, 1);
+    if (g_vklost) return;
     if (VW.cpu) {   /* post the previous frame as soon as it is done: one frame of latency, the GPU keeps working on this one */
         VSlot* p = &S[(g_si + NSLOT - 2) % NSLOT];
-        if (p->pending && p->rbpend) { double t = mono(); vok(vkWaitForFences(VD, 1, &p->fence, VK_TRUE, UINT64_MAX), "vkWaitForFences"); VT.wait += mono() - t; slot_finish(p); }
+        if (p->pending && p->rbpend) { double t = mono(); int ok = vok(vkWaitForFences(VD, 1, &p->fence, VK_TRUE, UINT64_MAX), "vkWaitForFences"); VT.wait += mono() - t; if (ok) slot_finish(p); }
     }
-    if (g_pframes % 900 == 0) vpc_save();
+    if (!g_vklost && g_pframes % 900 == 0) vpc_save();
 }
 
 /* ---- statistics, lifetime ---- */
@@ -2202,6 +2489,11 @@ static void vpc_save(void) {
     free(p); g_vpc_saved = g_vpc_new;
 }
 static void vb_report(void) {
+    if (g_vpa_jobs) vlog("async pipeline: %llu jobs (%llu wide), preparation %.1f ms, post-preparation wait %.1f ms (wall time)\n",
+        (unsigned long long)g_vpa_jobs, (unsigned long long)g_vpa_wide, g_vpa_work_s * 1e3, g_vpa_wait_s * 1e3);
+    if (g_sec_batches || g_sec_fallback) vlog("secondary: %llu batches, %llu draws, %llu multi-lane batches, %llu fallbacks\n",
+        (unsigned long long)g_sec_batches, (unsigned long long)g_sec_draws,
+        (unsigned long long)g_sec_parallel, (unsigned long long)g_sec_fallback);
     vlog("report: %llu draws (%llu skipped, %llu pre-transformed), %llu clears, %llu blits, %llu programs (%llu SPIR-V from cache, %llu failed), "
          "%llu shaders translated (%llu not), %llu pipelines, %llu texture uploads (%llu MB, %llu CPU-decoded), %llu buffer uploads (%llu MB), "
          "%llu MB streamed, %llu MB images, %llu MB device memory in %llu allocations, %llu submits; %llu frames, %llu shown\n",
@@ -2252,11 +2544,14 @@ static void* vk_lib_open(int* custom) {
 }
 static int vx_has(const VkExtensionProperties* x, uint32_t n, const char* name) { for (uint32_t i = 0; i < n; i++) if (!strcmp(x[i].extensionName, name)) return 1; return 0; }
 static void vb_teardown(void) {
-    if (VD) { vkDeviceWaitIdle(VD); vkDestroyDevice(VD, NULL); }
+    if (VD) { vkDeviceWaitIdle(VD);
+        for (int si = 0; si < NSLOT; si++) for (int i = 0; i < SEC_LANES; i++)
+            if (S[si].sec[i].pool) vkDestroyCommandPool(VD, S[si].sec[i].pool, NULL);
+        vkDestroyDevice(VD, NULL); }
     if (g_vkdbg && vkDestroyDebugUtilsMessengerEXT) vkDestroyDebugUtilsMessengerEXT(VI, g_vkdbg, NULL);
     if (VI && vkDestroyInstance) vkDestroyInstance(VI, NULL);
     VI = VK_NULL_HANDLE; VP = VK_NULL_HANDLE; VD = VK_NULL_HANDLE; VQ = VK_NULL_HANDLE; g_vkdbg = VK_NULL_HANDLE;
-    memset(S, 0, sizeof S); free(g_mb); g_mb = NULL; g_nmb = g_cmb = 0; g_vpc = VK_NULL_HANDLE; g_nupool = 0; g_nfp = 0;
+    sec_free_hosts(); memset(S, 0, sizeof S); g_secn = 0; free(g_mb); g_mb = NULL; g_nmb = g_cmb = 0; g_vpc = VK_NULL_HANDLE; g_nupool = 0; g_nfp = 0;
 }
 static int vb_init(void) {
     const char* e;
@@ -2278,6 +2573,14 @@ static int vb_init(void) {
     VX.splitprims = 0;   /* v0.10.12 (P0-4): ME1_VK_SPLITPRIMS - also split by primitives (Mali default 150000, set after VPP) */
     if ((e = getenv("ME1_VK_SPLITPRIMS")) && *e) VX.splitprims = (uint64_t)strtoull(e, NULL, 10);
     g_pipeidle = (e = getenv("ME1_VK_PIPEIDLE")) && *e == '1';
+    g_sec_on = (e = getenv("ME1_VK_SECONDARY")) && !strcmp(e, "1");
+    g_sec_fail_test = (e = getenv("ME1_VK_SEC_TEST_FAIL")) ? atoi(e) : 0;
+    g_secn = 0; g_sec_last_tex = VK_NULL_HANDLE;
+    /* Mali (0x13b5): secondary command buffers are unstable - force off by default even if requested. */
+    if (g_sec_on) {
+        /* vendor not yet known (VPP set later); keep flag, but guard at device init below */
+        vlog("experimental secondary command recording requested (Mali: off by default)\n");
+    }
     VX.validate = (e = getenv("ME1_VK_VALIDATE")) && *e == '1';
     /* GLSL -> SPIR-V compiler (glslang) */
     const char* sp = getenv("ME1_SPV_LIB"); if (!sp || !*sp) sp = "libme1spv.so";
@@ -2363,6 +2666,11 @@ static int vb_init(void) {
     vkGetPhysicalDeviceProperties(VP, &VPP); vkGetPhysicalDeviceMemoryProperties(VP, &VMP); vkGetPhysicalDeviceFeatures(VP, &VFH);
     if (!getenv("ME1_VK_SPLIT")) VX.split = VPP.vendorID == 0x13b5 ? 384 : 2048;   /* v0.10.12 (P0-4): Mali - small submissions (set after VPP, unlike the pre-init default) */
     if (!getenv("ME1_VK_SPLITPRIMS")) VX.splitprims = VPP.vendorID == 0x13b5 ? 150000 : 0;
+    /* V3: secondary command buffers default off on Mali unless explicitly re-enabled via ME1_VK_SECONDARY=force */
+    if (VPP.vendorID == 0x13b5 && g_sec_on) {
+        const char* e = getenv("ME1_VK_SECONDARY");
+        if (!e || strcmp(e, "force")) { g_sec_on = 0; vlog("secondary command recording disabled on Mali (default off)\n"); }
+    }
     VkQueueFamilyProperties qf[16]; uint32_t nq = 16; vkGetPhysicalDeviceQueueFamilyProperties(VP, &nq, qf);
     VX.api = VPP.apiVersion < api ? VPP.apiVersion : api;
     snprintf(VX.name, sizeof VX.name, "%s", VPP.deviceName);
