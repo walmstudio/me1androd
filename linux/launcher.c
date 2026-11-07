@@ -32,7 +32,7 @@
 #include "me1settings.h"
 #include "ini.h"
 
-#define VERSION "1.2.1"
+#define VERSION "1.2.18"
 extern const unsigned char me1a_loading[], me1a_icon[]; extern const unsigned int me1a_loading_size, me1a_icon_size;
 
 /* --------------------------------------------------------------------------------------------- utils --- */

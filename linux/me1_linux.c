@@ -46,7 +46,7 @@ void me1_perf(int64_t o[4]);
 int  gm_hud(char* out, size_t cap);   /* v1.2.1 GEARMASS indicator (runtime/gearmass.c) */
 void hle_hb_now(const char* why);
 
-#define ME1_LINUX_VERSION "1.2.1"
+#define ME1_LINUX_VERSION "1.2.18"
 static const char* const RENDERER_NAMES[4] = { "—", "OpenGL ES", "OpenGL ES (zink)", "Vulkan" };
 
 /* ------------------------------------------------------------------------------------------------ options --- */
@@ -804,6 +804,7 @@ int main(int argc, char** argv) {
         snprintf(tmp, sizeof tmp, "%dx%d", w, h); setenv("ME1_SCREEN", tmp, 1);
     }
     first_run_resolution(&cfg, docs);
+    { char report[512]; int r=me1cfg_adapt_resolution(&cfg,report,sizeof report); if (r || *report) fprintf(stderr,"[gearmass] %s\n",report); }
     { int i; if (me1cfg_find("screen.resolution", &i)) sscanf(cfg.value[i], "%dx%d", &g_game_w, &g_game_h);
       if (O.fullscreen < 0 && me1cfg_find("screen.fullscreen", &i)) O.fullscreen = atoi(cfg.value[i]) ? 1 : 0; }
     if (!open_window()) return 1;
