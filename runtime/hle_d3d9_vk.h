@@ -2567,6 +2567,11 @@ static int vb_init(void) {
     { const char* fe = getenv("ME1_FLOAT_EMU"); if (fe && *fe >= '0' && *fe <= '2') sm3_float_emu = *fe - '0'; }
     { const char* iv = getenv("ME1_INVARIANT"); if (iv && *iv >= '0' && *iv <= '1') sm3_invariant = *iv - '0'; }
     { const char* sl = getenv("ME1_SHADER_LITE"); sm3_lite = sl && *sl == '1'; }
+    { const char* sm = getenv("ME1_STRETCH_MODE");
+        if (!sm || !*sm) g_stretch = 0;
+        else if (!strcmp(sm, "stretch")) g_stretch = 1;
+        else if (!strcmp(sm, "fill")) g_stretch = 2;
+        else g_stretch = 0; }
     VX.strict = (e = getenv("ME1_VK_STRICT")) && *e == '1';
     VX.split = 2048;   /* pre-init default; the vendor-specific one is set after vkGetPhysicalDeviceProperties */
     if ((e = getenv("ME1_VK_SPLIT")) && *e) VX.split = (uint32_t)atoi(e);
